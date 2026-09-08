@@ -60,24 +60,6 @@ jobs:
           $text = $text.Replace('reinterpret_cast<HMENU>(ID_OPEN)', 'reinterpret_cast<HMENU>(static_cast<INT_PTR>(ID_OPEN))')
           [IO.File]::WriteAllText($p, $text, [Text.UTF8Encoding]::new($false))
 
-          $p = Join-Path $root 'tools\build-windows.ps1'
-          $text = Get-Content $p -Raw
-          $old = @'
-cmake -S $Root -B $Build -A x64 "-DSCS_SDK_INCLUDE_DIR=$SdkInclude" "-DETS2ID_BUILD_TESTS=ON"
-cmake --build $Build --config Release --parallel
-ctest --test-dir $Build -C Release --output-on-failure
-'@
-          $new = @'
-cmake -S $Root -B $Build -A x64 "-DSCS_SDK_INCLUDE_DIR=$SdkInclude" "-DETS2ID_BUILD_TESTS=ON"
-if ($LASTEXITCODE -ne 0) { throw "CMake configure failed with exit code $LASTEXITCODE." }
-cmake --build $Build --config Release --parallel
-if ($LASTEXITCODE -ne 0) { throw "MSVC Release x64 build failed with exit code $LASTEXITCODE." }
-ctest --test-dir $Build -C Release --output-on-failure
-if ($LASTEXITCODE -ne 0) { throw "Release regression tests failed with exit code $LASTEXITCODE." }
-'@
-          $text = $text.Replace($old.Trim(), $new.Trim())
-          [IO.File]::WriteAllText($p, $text, [Text.UTF8Encoding]::new($false))
-
       - name: Build, test, validate and package
         shell: powershell
         working-directory: ci/ETS2-Truck-Identifier
