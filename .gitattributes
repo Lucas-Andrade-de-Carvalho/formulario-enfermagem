@@ -1,4 +1,5 @@
 ci/visual-audit-src.part*.b64 -text
 ci/visual-audit-src.manifest.txt text eol=lf
 ci/msvc-c4505.patch -text
+ci/windows-vfs-test-createprocess.patch -text
 ci/work/ETS2-Truck-Visual-Identifier-v2/src/gui/windows_platform.cpp -text
