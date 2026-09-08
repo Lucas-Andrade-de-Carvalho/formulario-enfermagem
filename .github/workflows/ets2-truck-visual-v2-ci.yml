@@ -1,0 +1,119 @@
+name: ETS2 Truck Visual Identifier v2 x64
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - 'ci/ets2-truck-visual-identifier-v2'
+
+jobs:
+  release-x64:
+    runs-on: windows-2022
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Reconstruct exact v2 source
+        shell: powershell
+        run: |
+          $parts = Get-ChildItem 'ci\visual-v2-src.part*.b64' | Sort-Object Name
+          if ($parts.Count -ne 4) { throw "Expected 4 source parts, got $($parts.Count)." }
+          $b64 = (($parts | ForEach-Object { (Get-Content $_.FullName -Raw -Encoding ASCII).Trim() }) -join '')
+          [IO.File]::WriteAllBytes('ci\visual-v2-src.tar.gz', [Convert]::FromBase64String($b64))
+          $hash = (Get-FileHash 'ci\visual-v2-src.tar.gz' -Algorithm SHA256).Hash.ToLowerInvariant()
+          if ($hash -ne '4edf53ddc534fc213c56edad03671212df6dfc45d294d6dbd68edb6d28b5c081') { throw "Source SHA-256 mismatch: $hash" }
+          New-Item -ItemType Directory -Force 'ci\work' | Out-Null
+          tar -xzf 'ci\visual-v2-src.tar.gz' -C 'ci\work'
+          if ($LASTEXITCODE -ne 0) { throw "Source extraction failed: $LASTEXITCODE" }
+
+      - name: MSVC Release x64 build regress and package
+        shell: powershell
+        working-directory: ci/work/ETS2-Truck-Visual-Identifier-v2
+        run: .\tools\build-windows.ps1
+
+      - name: Final binary and GUI smoke audit
+        shell: powershell
+        run: |
+          $root = (Resolve-Path 'ci\work\ETS2-Truck-Visual-Identifier-v2').Path
+          $exe = Join-Path $root 'build-win\src\gui\Release\ETS2TruckVisualIdentifier.exe'
+          $dll = Join-Path $root 'build-win\src\plugin\Release\ets2_truck_visual_identifier.dll'
+          $zip = Join-Path $root 'dist\ETS2_Truck_Visual_Identifier_CABIN_PAINT_TEST_x64.zip'
+          $report = Join-Path $root 'dist\BUILD_REPORT.txt'
+          foreach ($p in @($exe,$dll,$zip,$report)) { if (-not (Test-Path $p)) { throw "Missing required output: $p" } }
+
+          function Get-PeInfo([string]$Path) {
+            [byte[]]$b = [IO.File]::ReadAllBytes($Path)
+            if ($b.Length -lt 512 -or $b[0] -ne 0x4d -or $b[1] -ne 0x5a) { throw "Invalid MZ: $Path" }
+            $pe = [BitConverter]::ToInt32($b,0x3c)
+            if ($b[$pe] -ne 0x50 -or $b[$pe+1] -ne 0x45 -or $b[$pe+2] -ne 0 -or $b[$pe+3] -ne 0) { throw "Invalid PE: $Path" }
+            $opt = $pe + 24
+            [pscustomobject]@{
+              Machine=[BitConverter]::ToUInt16($b,$pe+4)
+              Magic=[BitConverter]::ToUInt16($b,$opt)
+              Entry=[BitConverter]::ToUInt32($b,$opt+16)
+              Subsystem=[BitConverter]::ToUInt16($b,$opt+68)
+            }
+          }
+          $ei=Get-PeInfo $exe; $di=Get-PeInfo $dll
+          if ($ei.Magic -ne 0x20b -or $di.Magic -ne 0x20b) { throw 'PE32+ audit failed.' }
+          if ($ei.Machine -ne 0x8664 -or $di.Machine -ne 0x8664) { throw 'AMD64 audit failed.' }
+          if ($ei.Subsystem -ne 2 -or $ei.Entry -eq 0) { throw 'GUI subsystem/entrypoint audit failed.' }
+
+          $vswhere = Join-Path ${env:ProgramFiles(x86)} 'Microsoft Visual Studio\Installer\vswhere.exe'
+          $vs = (& $vswhere -latest -products * -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath).Trim()
+          if (-not $vs) { throw 'Visual Studio not found.' }
+          $dumpbin = Get-ChildItem (Join-Path $vs 'VC\Tools\MSVC\*\bin\Hostx64\x64\dumpbin.exe') | Sort-Object FullName -Descending | Select-Object -First 1 -ExpandProperty FullName
+          if (-not $dumpbin) { throw 'dumpbin.exe not found.' }
+          $ed = (& $dumpbin /DEPENDENTS $exe 2>&1 | Out-String); if ($LASTEXITCODE -ne 0) { throw 'EXE import audit failed.' }
+          $dd = (& $dumpbin /DEPENDENTS $dll 2>&1 | Out-String); if ($LASTEXITCODE -ne 0) { throw 'DLL import audit failed.' }
+          $exports = (& $dumpbin /EXPORTS $dll 2>&1 | Out-String); if ($LASTEXITCODE -ne 0) { throw 'DLL export audit failed.' }
+          if (($ed+$dd) -match '(?i)(ucrtbased\.dll|vcruntime[^ \r\n]*d\.dll|msvcp[^ \r\n]*d\.dll)') { throw 'Debug CRT dependency detected.' }
+          foreach ($name in @('scs_telemetry_init','scs_telemetry_shutdown')) { if ($exports -notmatch [regex]::Escape($name)) { throw "Missing plugin export: $name" } }
+
+          if (-not ('Ets2VisualCiNative' -as [type])) {
+            Add-Type @'
+          using System;
+          using System.Runtime.InteropServices;
+          public static class Ets2VisualCiNative {
+              [DllImport("kernel32.dll", CharSet=CharSet.Unicode, SetLastError=true)] public static extern IntPtr LoadLibraryW(string path);
+              [DllImport("kernel32.dll")] public static extern bool FreeLibrary(IntPtr module);
+          }
+          '@
+          }
+          $h=[Ets2VisualCiNative]::LoadLibraryW($dll)
+          if ($h -eq [IntPtr]::Zero) { throw "Plugin LoadLibrary failed. Win32=$([Runtime.InteropServices.Marshal]::GetLastWin32Error())" }
+          [void][Ets2VisualCiNative]::FreeLibrary($h)
+
+          $proc=Start-Process -FilePath $exe -PassThru
+          try {
+            if (-not $proc.WaitForInputIdle(5000)) { throw 'GUI did not reach input-idle.' }
+            Start-Sleep -Milliseconds 1200
+            $proc.Refresh()
+            if ($proc.HasExited) { throw "GUI exited immediately: $($proc.ExitCode)" }
+            if ($proc.MainWindowTitle -notlike 'ETS2 TRUCK VISUAL IDENTIFIER*') { throw "Unexpected window title: '$($proc.MainWindowTitle)'" }
+          } finally {
+            if ($proc -and -not $proc.HasExited) { Stop-Process -Id $proc.Id -Force }
+          }
+
+          Add-Content -Encoding ASCII $report @(
+            'FINAL LINK: PASS',
+            'PE EXE/DLL: PE32+',
+            'MACHINE EXE/DLL: AMD64 (0x8664)',
+            'SUBSYSTEM EXE: WINDOWS GUI',
+            'ENTRYPOINT EXE: VALID',
+            'IMPORTS EXE/DLL: VALID',
+            'DEBUG CRT: NONE',
+            'PLUGIN EXPORTS: VALID',
+            'WINDOWS GUI SMOKE: PASS',
+            'IMMEDIATE CRASH: NO',
+            'REGRESSIONS INTRODUCED: 0'
+          )
+
+      - name: Upload v2 test package
+        uses: actions/upload-artifact@v4
+        with:
+          name: ETS2_Truck_Visual_Identifier_CABIN_PAINT_TEST_x64
+          path: |
+            ci/work/ETS2-Truck-Visual-Identifier-v2/dist/ETS2_Truck_Visual_Identifier_CABIN_PAINT_TEST_x64.zip
+            ci/work/ETS2-Truck-Visual-Identifier-v2/dist/BUILD_REPORT.txt
+          if-no-files-found: error
