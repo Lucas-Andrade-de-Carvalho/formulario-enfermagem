@@ -1,0 +1,51 @@
+--- a/src/gui/windows_integration_tests.cpp
++++ b/src/gui/windows_integration_tests.cpp
+@@ -1,7 +1,6 @@
+ #include "gui/local_configuration.h"
+ #include "core/sii_document.h"
+ #include <windows.h>
+-#include <cstdlib>
+ #include <filesystem>
+ #include <fstream>
+ #include <iostream>
+@@ -18,10 +17,37 @@
+   out << text;
+ }
+ 
++static bool RunTool(const fs::path& tool, const std::wstring& arguments) {
++  std::wstring command = L"\"" + tool.wstring() + L"\" " + arguments;
++  STARTUPINFOW startup{};
++  startup.cb = sizeof(startup);
++  PROCESS_INFORMATION process{};
++  const BOOL started = CreateProcessW(tool.c_str(), command.data(), nullptr, nullptr, FALSE,
++                                      CREATE_NO_WINDOW, nullptr, nullptr, &startup, &process);
++  if (!started) {
++    std::wcerr << L"CreateProcessW failed for " << tool << L" Win32=" << GetLastError() << L"\n";
++    return false;
++  }
++  const DWORD waitResult = WaitForSingleObject(process.hProcess, 30000);
++  DWORD exitCode = STILL_ACTIVE;
++  const BOOL gotExitCode = GetExitCodeProcess(process.hProcess, &exitCode);
++  CloseHandle(process.hThread);
++  CloseHandle(process.hProcess);
++  if (waitResult != WAIT_OBJECT_0 || !gotExitCode) {
++    std::wcerr << L"scs_tool wait/exit-code failed, wait=" << waitResult
++               << L" Win32=" << GetLastError() << L"\n";
++    return false;
++  }
++  if (exitCode != 0) {
++    std::wcerr << L"scs_tool exited with code " << exitCode << L"\n";
++    return false;
++  }
++  return true;
++}
++
+ static bool CreateArchive(const fs::path& tool, const fs::path& archive, const fs::path& source) {
+-  const std::wstring command = L"\"" + tool.wstring() + L"\" create \"" + archive.wstring() +
+-                               L"\" \"" + source.wstring() + L"\" >NUL 2>&1";
+-  return _wsystem(command.c_str()) == 0 && fs::exists(archive);
++  const std::wstring args = L"create \"" + archive.wstring() + L"\" \"" + source.wstring() + L"\"";
++  return RunTool(tool, args) && fs::is_regular_file(archive) && fs::file_size(archive) > 0;
+ }
+ 
+ int wmain(int argc, wchar_t** argv) {
