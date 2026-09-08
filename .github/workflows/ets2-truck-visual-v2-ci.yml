@@ -61,9 +61,13 @@ jobs:
           $text = $text.Replace($needle,$replacement)
           [IO.File]::WriteAllText($cmake,$text,$utf8)
 
+          $installLabel = 'Instala' + [char]0x00E7 + [char]0x00E3 + 'o:'
+          $truckLabel = 'Caminh' + [char]0x00E3 + 'o:'
+          $notInstalled = 'N' + [char]0x00C3 + 'O INSTALADO'
+          $title = 'ETS2 TRUCK VISUAL IDENTIFIER ' + [char]0x2014 + ' TRACTOR ONLY'
           $main = Get-Content (Join-Path $root 'src\gui\main.cpp') -Raw -Encoding UTF8
-          foreach ($token in @('CreateWindowExW','SetWindowTextW','MessageBoxW','Instalação:','Caminhão:','NÃO INSTALADO','IDENTIFICANDO...','Desconhecido','ETS2 TRUCK VISUAL IDENTIFIER — TRACTOR ONLY')) {
-            if (-not $main.Contains($token)) { throw "Unicode/Wide source invariant missing: $token" }
+          foreach ($token in @('CreateWindowExW','SetWindowTextW','MessageBoxW',$installLabel,$truckLabel,$notInstalled,'IDENTIFICANDO...','Desconhecido',$title)) {
+            if (-not $main.Contains($token)) { throw "Unicode/Wide source invariant missing." }
           }
           $wp = Get-Content (Join-Path $root 'src\gui\windows_platform.cpp') -Raw -Encoding UTF8
           foreach ($token in @('ShellExecuteExW','GetModuleFileNameW','TruckVisualIdentity.log')) { if (-not $wp.Contains($token)) { throw "Windows/log invariant missing: $token" } }
@@ -142,9 +146,16 @@ jobs:
             for($i=0;$i -le $Hay.Length-$Needle.Length;$i++) { $ok=$true; for($j=0;$j -lt $Needle.Length;$j++) { if($Hay[$i+$j] -ne $Needle[$j]) { $ok=$false; break } }; if($ok){return $true} }
             return $false
           }
+          $installLabel = 'Instala' + [char]0x00E7 + [char]0x00E3 + 'o:'
+          $truckLabel = 'Caminh' + [char]0x00E3 + 'o:'
+          $notInstalled = 'N' + [char]0x00C3 + 'O INSTALADO'
+          $title = 'ETS2 TRUCK VISUAL IDENTIFIER ' + [char]0x2014 + ' TRACTOR ONLY'
           [byte[]]$exeBytes=[IO.File]::ReadAllBytes($exe)
-          foreach($s in @('Instalação:','Caminhão:','NÃO INSTALADO','IDENTIFICANDO...','Desconhecido','ETS2 TRUCK VISUAL IDENTIFIER — TRACTOR ONLY')) { if(-not (Contains-Bytes $exeBytes ([Text.Encoding]::Unicode.GetBytes($s)))) { throw "UTF-16 UI string missing from EXE: $s" } }
-          foreach($bad in @('InstalaÃ§Ã£o','CaminhÃ£o','NÃƒO','Ãƒ','ï¿½')) { if(Contains-Bytes $exeBytes ([Text.Encoding]::Unicode.GetBytes($bad))) { throw "Mojibake sequence embedded in EXE: $bad" } }
+          foreach($s in @($installLabel,$truckLabel,$notInstalled,'IDENTIFICANDO...','Desconhecido',$title)) { if(-not (Contains-Bytes $exeBytes ([Text.Encoding]::Unicode.GetBytes($s)))) { throw 'UTF-16 UI string missing from EXE.' } }
+          $badInstall = 'Instala' + [char]0x00C3 + [char]0x00A7 + [char]0x00C3 + [char]0x00A3 + 'o'
+          $badTruck = 'Caminh' + [char]0x00C3 + [char]0x00A3 + 'o'
+          $badNao = 'N' + [char]0x00C3 + [char]0x0192 + 'O'
+          foreach($bad in @($badInstall,$badTruck,$badNao)) { if(Contains-Bytes $exeBytes ([Text.Encoding]::Unicode.GetBytes($bad))) { throw 'Mojibake sequence embedded in EXE.' } }
 
           $proc=Start-Process -FilePath $exe -PassThru
           try {
@@ -152,7 +163,7 @@ jobs:
             Start-Sleep -Milliseconds 1200
             $proc.Refresh()
             if ($proc.HasExited) { throw "GUI exited immediately: $($proc.ExitCode)" }
-            if ($proc.MainWindowTitle -ne 'ETS2 TRUCK VISUAL IDENTIFIER — TRACTOR ONLY') { throw "Unexpected window title: '$($proc.MainWindowTitle)'" }
+            if ($proc.MainWindowTitle -ne $title) { throw 'Unexpected window title.' }
             [UIntPtr]$smResult=[UIntPtr]::Zero
             $responsive=[Ets2VisualCiNative]::SendMessageTimeoutW($proc.MainWindowHandle,0,[UIntPtr]::Zero,[IntPtr]::Zero,2,1000,[ref]$smResult)
             if($responsive -eq [IntPtr]::Zero){throw 'GUI thread is not responding.'}
@@ -163,19 +174,19 @@ jobs:
 
           if(Test-Path $pkg){Remove-Item $pkg -Recurse -Force}
           Copy-Item $oldPkg $pkg -Recurse
-          $readme = @'
-          1. Extraia o ZIP.
-          2. Abra ETS2TruckVisualIdentifier.exe.
-          3. Clique INSTALAR.
-          4. Clique ABRIR ETS2.
-          5. Entre em um save.
-          6. Aguarde a identificação.
-          7. Confira principalmente Cabine e Cor/Pintura.
-          8. Confira também Eixos, Marca e Modelo.
-          9. Troque de caminhão/configuração e teste novamente.
-          10. Se Cabin ou Color ficarem Desconhecido, envie a screenshot da GUI e TruckVisualIdentity.log.
-          '@
-          $readme.Trim() | Set-Content -Encoding UTF8 (Join-Path $pkg 'README.txt')
+          $readmeLines = @(
+            '1. Extraia o ZIP.',
+            '2. Abra ETS2TruckVisualIdentifier.exe.',
+            '3. Clique INSTALAR.',
+            '4. Clique ABRIR ETS2.',
+            '5. Entre em um save.',
+            ('6. Aguarde a identifica' + [char]0x00E7 + [char]0x00E3 + 'o.'),
+            '7. Confira principalmente Cabine e Cor/Pintura.',
+            '8. Confira tambem Eixos, Marca e Modelo.',
+            ('9. Troque de caminh' + [char]0x00E3 + 'o/configura' + [char]0x00E7 + [char]0x00E3 + 'o e teste novamente.'),
+            '10. Se Cabin ou Color ficarem Desconhecido, envie a screenshot da GUI e TruckVisualIdentity.log.'
+          )
+          $readmeLines | Set-Content -Encoding UTF8 (Join-Path $pkg 'README.txt')
           $manifest=Join-Path $pkg 'SHA256SUMS.txt'; if(Test-Path $manifest){Remove-Item $manifest -Force}
           $required=@('ETS2TruckVisualIdentifier.exe','Runtime\ets2_truck_visual_identifier.dll','Runtime\scs_tool.exe','README.txt','THIRD_PARTY_NOTICES.md')
           foreach($r in $required){if(-not(Test-Path(Join-Path $pkg $r))){throw "Package missing: $r"}}
