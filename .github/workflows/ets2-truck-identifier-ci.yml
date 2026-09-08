@@ -24,6 +24,29 @@ jobs:
           New-Item -ItemType Directory -Force 'ci\ETS2-Truck-Identifier' | Out-Null
           tar -xzf 'ci\ets2-src.tar.gz' -C 'ci\ETS2-Truck-Identifier'
 
+      - name: Apply compiler-hardening fixes under test
+        shell: powershell
+        run: |
+          $root = 'ci\ETS2-Truck-Identifier'
+          $cppFiles = @(
+            'src\plugin\telemetry_plugin.cpp',
+            'src\gui\telemetry_client.cpp',
+            'src\gui\local_resolver.cpp',
+            'src\gui\main.cpp',
+            'src\gui\windows_support.cpp'
+          )
+          foreach ($rel in $cppFiles) {
+            $p = Join-Path $root $rel
+            $text = Get-Content $p -Raw
+            $text = $text -replace '(?m)^#define WIN32_LEAN_AND_MEAN\r?\n', ''
+            $text = $text -replace '(?m)^#define NOMINMAX\r?\n', ''
+            [IO.File]::WriteAllText($p, $text, [Text.UTF8Encoding]::new($false))
+          }
+          $p = Join-Path $root 'src\core\save_resolver.cpp'
+          $text = Get-Content $p -Raw
+          $text = $text.Replace('[](unsigned char c){return std::tolower(c);}', '[](unsigned char c){return static_cast<char>(std::tolower(c));}')
+          [IO.File]::WriteAllText($p, $text, [Text.UTF8Encoding]::new($false))
+
       - name: Build, test, validate and package
         shell: powershell
         working-directory: ci/ETS2-Truck-Identifier
