@@ -23,8 +23,9 @@ jobs:
           if ($hash -ne '3278dc58701fb0ba29b9e5fad297b8615687a54dbe7c1bbe3001bfb2f6d7a7f2') { throw "Source archive SHA-256 mismatch: $hash" }
           New-Item -ItemType Directory -Force 'ci\ETS2-Truck-Identifier' | Out-Null
           tar -xzf 'ci\ets2-src.tar.gz' -C 'ci\ETS2-Truck-Identifier'
+          if ($LASTEXITCODE -ne 0) { throw "Source extraction failed with exit code $LASTEXITCODE." }
 
-      - name: Apply compiler-hardening fixes under test
+      - name: Apply build-only compatibility fixes
         shell: powershell
         run: |
           $root = 'ci\ETS2-Truck-Identifier'
@@ -60,10 +61,117 @@ jobs:
           $text = $text.Replace('reinterpret_cast<HMENU>(ID_OPEN)', 'reinterpret_cast<HMENU>(static_cast<INT_PTR>(ID_OPEN))')
           [IO.File]::WriteAllText($p, $text, [Text.UTF8Encoding]::new($false))
 
-      - name: Build, test, validate and package
+          # Windows PowerShell 5.1/.NET Framework has no System.IO.Path.GetRelativePath.
+          $p = Join-Path $root 'tools\build-windows.ps1'
+          $text = Get-Content $p -Raw
+          $old = '$relative = [IO.Path]::GetRelativePath($Package, $file.FullName).Replace(''\'',''/'')'
+          $new = '$relative = $file.FullName.Substring($Package.Length).TrimStart([char]92).Replace(''\'',''/'')'
+          if (-not $text.Contains($old)) { throw 'Expected packaging compatibility line was not found.' }
+          $text = $text.Replace($old, $new)
+          [IO.File]::WriteAllText($p, $text, [Text.UTF8Encoding]::new($false))
+
+      - name: Build, link, regress, self-test and package
         shell: powershell
         working-directory: ci/ETS2-Truck-Identifier
         run: .\tools\build-windows.ps1
+
+      - name: Final PE, imports, exports and Windows GUI smoke audit
+        shell: powershell
+        run: |
+          $root = (Resolve-Path 'ci\ETS2-Truck-Identifier').Path
+          $exe = Join-Path $root 'build-win\src\gui\Release\ETS2TruckIdentifier.exe'
+          $dll = Join-Path $root 'build-win\src\plugin\Release\ets2_truck_identifier.dll'
+          $zip = Join-Path $root 'dist\ETS2_Truck_Identifier_TRACTOR_TEST_x64.zip'
+          $report = Join-Path $root 'dist\BUILD_REPORT.txt'
+
+          foreach ($p in @($exe,$dll,$zip)) {
+            if (-not (Test-Path $p)) { throw "Required output missing: $p" }
+          }
+
+          function Get-PeInfo([string]$Path) {
+            [byte[]]$b = [IO.File]::ReadAllBytes($Path)
+            if ($b.Length -lt 512 -or $b[0] -ne 0x4D -or $b[1] -ne 0x5A) { throw "Invalid MZ header: $Path" }
+            $pe = [BitConverter]::ToInt32($b, 0x3C)
+            if ($pe -lt 0 -or ($pe + 96) -ge $b.Length) { throw "Invalid PE offset: $Path" }
+            if ($b[$pe] -ne 0x50 -or $b[$pe+1] -ne 0x45 -or $b[$pe+2] -ne 0 -or $b[$pe+3] -ne 0) { throw "Invalid PE signature: $Path" }
+            $opt = $pe + 24
+            [pscustomobject]@{
+              Machine = [BitConverter]::ToUInt16($b, $pe + 4)
+              Magic = [BitConverter]::ToUInt16($b, $opt)
+              EntryPoint = [BitConverter]::ToUInt32($b, $opt + 16)
+              Subsystem = [BitConverter]::ToUInt16($b, $opt + 68)
+            }
+          }
+
+          $ei = Get-PeInfo $exe
+          $di = Get-PeInfo $dll
+          if ($ei.Magic -ne 0x20B -or $di.Magic -ne 0x20B) { throw 'PE format is not PE32+.' }
+          if ($ei.Machine -ne 0x8664 -or $di.Machine -ne 0x8664) { throw 'PE machine is not AMD64/x64.' }
+          if ($ei.Subsystem -ne 2) { throw "EXE subsystem is $($ei.Subsystem), expected Windows GUI (2)." }
+          if ($ei.EntryPoint -eq 0) { throw 'EXE entrypoint RVA is zero.' }
+
+          $vswhere = Join-Path ${env:ProgramFiles(x86)} 'Microsoft Visual Studio\Installer\vswhere.exe'
+          $vs = (& $vswhere -latest -products * -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath).Trim()
+          if (-not $vs) { throw 'Visual Studio installation path not found.' }
+          $dumpbin = Get-ChildItem (Join-Path $vs 'VC\Tools\MSVC\*\bin\Hostx64\x64\dumpbin.exe') | Sort-Object FullName -Descending | Select-Object -First 1 -ExpandProperty FullName
+          if (-not $dumpbin) { throw 'dumpbin.exe not found.' }
+
+          $exeHeaders = (& $dumpbin /HEADERS $exe 2>&1 | Out-String)
+          if ($LASTEXITCODE -ne 0) { throw 'dumpbin /HEADERS failed for EXE.' }
+          $exeDeps = (& $dumpbin /DEPENDENTS $exe 2>&1 | Out-String)
+          if ($LASTEXITCODE -ne 0) { throw 'dumpbin /DEPENDENTS failed for EXE.' }
+          $dllDeps = (& $dumpbin /DEPENDENTS $dll 2>&1 | Out-String)
+          if ($LASTEXITCODE -ne 0) { throw 'dumpbin /DEPENDENTS failed for DLL.' }
+          $dllExports = (& $dumpbin /EXPORTS $dll 2>&1 | Out-String)
+          if ($LASTEXITCODE -ne 0) { throw 'dumpbin /EXPORTS failed for DLL.' }
+
+          $allDeps = $exeDeps + "`n" + $dllDeps
+          if ($allDeps -match '(?i)(ucrtbased\.dll|vcruntime[^ \r\n]*d\.dll|msvcp[^ \r\n]*d\.dll)') { throw 'Debug CRT dependency detected.' }
+          foreach ($name in @('scs_telemetry_init','scs_telemetry_shutdown')) {
+            if ($dllExports -notmatch [regex]::Escape($name)) { throw "Required DLL export missing: $name" }
+          }
+
+          if (-not ('Ets2IdCiNative' -as [type])) {
+            Add-Type @'
+          using System;
+          using System.Runtime.InteropServices;
+          public static class Ets2IdCiNative {
+              [DllImport("kernel32.dll", CharSet=CharSet.Unicode, SetLastError=true)]
+              public static extern IntPtr LoadLibraryW(string path);
+              [DllImport("kernel32.dll")]
+              public static extern bool FreeLibrary(IntPtr module);
+          }
+          '@
+          }
+          $h = [Ets2IdCiNative]::LoadLibraryW($dll)
+          if ($h -eq [IntPtr]::Zero) { throw "Plugin LoadLibrary failed; imports/dependencies unavailable. Win32=$([Runtime.InteropServices.Marshal]::GetLastWin32Error())" }
+          [void][Ets2IdCiNative]::FreeLibrary($h)
+
+          $proc = Start-Process -FilePath $exe -PassThru
+          try {
+            if (-not $proc.WaitForInputIdle(5000)) { throw 'GUI did not reach input-idle initialization state.' }
+            Start-Sleep -Milliseconds 1200
+            $proc.Refresh()
+            if ($proc.HasExited) { throw "GUI exited immediately with code $($proc.ExitCode)." }
+            if ($proc.MainWindowTitle -notlike '*ETS2 TRUCK IDENTIFIER*') { throw "Expected GUI window title was not created. Actual: '$($proc.MainWindowTitle)'" }
+          } finally {
+            if ($proc -and -not $proc.HasExited) { Stop-Process -Id $proc.Id -Force }
+          }
+
+          Add-Content -Encoding ascii $report @(
+            'FINAL LINK: PASS',
+            'PE FORMAT EXE: PE32+',
+            'PE FORMAT DLL: PE32+',
+            'MACHINE EXE/DLL: AMD64 (0x8664)',
+            'SUBSYSTEM EXE: WINDOWS GUI',
+            'ENTRYPOINT EXE: VALID',
+            'IMPORTS EXE/DLL: LOADABLE',
+            'DEBUG CRT: NONE',
+            'PLUGIN EXPORTS: VALID',
+            'WINDOWS GUI SMOKE TEST: PASS',
+            'IMMEDIATE CRASH: NO',
+            'REGRESSIONS INTRODUCED: 0'
+          )
 
       - name: Upload test ZIP and build report
         uses: actions/upload-artifact@v4
