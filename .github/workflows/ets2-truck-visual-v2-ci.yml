@@ -16,9 +16,19 @@ jobs:
       - name: Reconstruct exact v2 source
         shell: powershell
         run: |
-          $parts = Get-ChildItem 'ci\visual-v2b-src.part*.b64' | Sort-Object Name
-          if ($parts.Count -ne 4) { throw "Expected 4 source parts, got $($parts.Count)." }
-          $b64 = (($parts | ForEach-Object { (Get-Content $_.FullName -Raw -Encoding ASCII).Trim() }) -join '')
+          $parts = @(
+            'ci\visual-v2b-src.part00.b64',
+            'ci\visual-v2b-src.part01.b64',
+            'ci\visual-v2b-src.part02.b64',
+            'ci\visual-v2b-tail00.b64',
+            'ci\visual-v2b-tail01.b64',
+            'ci\visual-v2b-tail02.b64',
+            'ci\visual-v2b-tail03.b64',
+            'ci\visual-v2b-tail04.b64',
+            'ci\visual-v2b-tail05.b64'
+          )
+          foreach ($p in $parts) { if (-not (Test-Path $p)) { throw "Missing source segment: $p" } }
+          $b64 = (($parts | ForEach-Object { (Get-Content $_ -Raw -Encoding ASCII).Trim() }) -join '')
           [IO.File]::WriteAllBytes('ci\visual-v2-src.tar.gz', [Convert]::FromBase64String($b64))
           $hash = (Get-FileHash 'ci\visual-v2-src.tar.gz' -Algorithm SHA256).Hash.ToLowerInvariant()
           if ($hash -ne '0492cdf945db24c442f59b9e9fd014c715b6ab47a49324f99944d5763719dce7') { throw "Source SHA-256 mismatch: $hash" }
