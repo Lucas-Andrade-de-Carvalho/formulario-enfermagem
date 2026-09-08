@@ -81,15 +81,16 @@ jobs:
           $patchSha=(Get-FileHash $patch -Algorithm SHA256).Hash.ToLowerInvariant()
           $expectedPatch='a74bf770033ec4ef23ef514baea5734831eeb4103e7a0dbd216fdecacdcdea82'
           if($patchSha-ne$expectedPatch){throw "MSVC patch SHA mismatch expected=$expectedPatch actual=$patchSha"}
-          $root=(Resolve-Path 'ci\work\ETS2-Truck-Visual-Identifier-v2').Path
-          Push-Location $root
-          try{
-            & git apply --check --whitespace=nowarn $patch
-            if($LASTEXITCODE-ne0){throw "git apply --check failed: $LASTEXITCODE"}
-            & git apply --whitespace=nowarn $patch
-            if($LASTEXITCODE-ne0){throw "git apply failed: $LASTEXITCODE"}
-          }finally{Pop-Location}
+          $subdir='ci/work/ETS2-Truck-Visual-Identifier-v2'
+          $root=(Resolve-Path $subdir).Path
           $resultFile=Join-Path $root 'src\gui\windows_platform.cpp'
+          $beforeSha=(Get-FileHash $resultFile -Algorithm SHA256).Hash.ToLowerInvariant()
+          $expectedBefore='3ca9a55a0e50c05e036bae73621a90ee1df53e9c3ee2aa7ac4c364faabbfe3af'
+          if($beforeSha-ne$expectedBefore){throw "Pre-patch windows_platform.cpp SHA mismatch expected=$expectedBefore actual=$beforeSha"}
+          & git apply --check --whitespace=nowarn --directory=$subdir $patch
+          if($LASTEXITCODE-ne0){throw "git apply --check failed: $LASTEXITCODE"}
+          & git apply --whitespace=nowarn --directory=$subdir $patch
+          if($LASTEXITCODE-ne0){throw "git apply failed: $LASTEXITCODE"}
           $resultSha=(Get-FileHash $resultFile -Algorithm SHA256).Hash.ToLowerInvariant()
           $expectedResult='4defdba6b1c39cdcabac769bf0c7c3046886eaab2878889cbd654cd31f49da93'
           if($resultSha-ne$expectedResult){throw "Patched windows_platform.cpp SHA mismatch expected=$expectedResult actual=$resultSha"}
@@ -104,6 +105,7 @@ jobs:
           Add-Content -Encoding ASCII 'ci\SOURCE_PROVENANCE.txt' "BUILD_FIX_PATCH_SHA256=$patchSha"
           Add-Content -Encoding ASCII 'ci\SOURCE_PROVENANCE.txt' "RESULT_WINDOWS_PLATFORM_SHA256=$resultSha"
           Add-Content -Encoding ASCII 'ci\SOURCE_PROVENANCE.txt' "EFFECTIVE_SOURCE_ID=$effective"
+          Write-Host "PRE_PATCH_WINDOWS_PLATFORM_SHA256=$beforeSha"
           Write-Host "BUILD_FIX_PATCH_SHA256=$patchSha"
           Write-Host "RESULT_WINDOWS_PLATFORM_SHA256=$resultSha"
           Write-Host "EFFECTIVE_SOURCE_ID=$effective"
