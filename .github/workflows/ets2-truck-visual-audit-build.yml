@@ -86,7 +86,9 @@ jobs:
           $local=Get-Content (Join-Path $root 'src\gui\local_configuration.cpp') -Raw -Encoding UTF8
           foreach($t in @('Localization module','CURRENT_TRUCK_SAVE_REF','ACTIVE_PROFILE','ACTIVE_SAVE','CONFIGURATION_UNIT')){if(-not$local.Contains($t)){throw "VFS/save/localization invariant missing: $t"}}
           $win=Get-Content (Join-Path $root 'src\gui\windows_platform.cpp') -Raw -Encoding UTF8
-          foreach($t in @('install.manifest','PluginOwnership','DESINSTALAÇÃO FALHOU','OPERAÇÃO CANCELADA','RunInstallUninstallSelfTest')){if(-not$win.Contains($t)){throw "Uninstall invariant missing: $t"}}
+          $uninstallFailed='DESINSTALA'+[char]0x00C7+[char]0x00C3+'O FALHOU'
+          $operationCancelled='OPERA'+[char]0x00C7+[char]0x00C3+'O CANCELADA'
+          foreach($t in @('install.manifest','PluginOwnership',$uninstallFailed,$operationCancelled,'RunInstallUninstallSelfTest')){if(-not$win.Contains($t)){throw "Uninstall invariant missing: $t"}}
 
       - name: MSVC Release x64 build Windows tests and package
         shell: powershell
