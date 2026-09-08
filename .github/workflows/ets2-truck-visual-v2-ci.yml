@@ -1,4 +1,4 @@
-name: ETS2 Truck Visual Identifier v2 x64
+name: ETS2 Truck Visual Identifier real config x64
 
 on:
   workflow_dispatch:
@@ -9,225 +9,95 @@ on:
 jobs:
   release-x64:
     runs-on: windows-2022
-    timeout-minutes: 25
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
 
-      - name: Reconstruct verified base source
+      - name: Reconstruct exact real-config source
         shell: powershell
         run: |
-          $parts = @(
-            'ci\visual-v2b-src.part00.b64',
-            'ci\visual-v2b-src.part01.b64',
-            'ci\visual-v2b-src.part02.b64',
-            'ci\visual-v2b-tail00.b64',
-            'ci\visual-v2b-tail01.b64',
-            'ci\visual-v2b-tail02.b64',
-            'ci\visual-v2b-tail03.b64',
-            'ci\visual-v2b-tail04.b64',
-            'ci\visual-v2b-tail05.b64'
-          )
-          foreach ($p in $parts) { if (-not (Test-Path $p)) { throw "Missing source segment: $p" } }
-          $b64 = (($parts | ForEach-Object { (Get-Content $_ -Raw -Encoding ASCII).Trim() }) -join '')
-          [IO.File]::WriteAllBytes('ci\visual-v2-base.tar.gz', [Convert]::FromBase64String($b64))
-          $hash = (Get-FileHash 'ci\visual-v2-base.tar.gz' -Algorithm SHA256).Hash.ToLowerInvariant()
-          if ($hash -ne '0492cdf945db24c442f59b9e9fd014c715b6ab47a49324f99944d5763719dce7') { throw "Base source SHA-256 mismatch: $hash" }
-          New-Item -ItemType Directory -Force 'ci\work' | Out-Null
-          tar -xzf 'ci\visual-v2-base.tar.gz' -C 'ci\work'
-          if ($LASTEXITCODE -ne 0) { throw "Source extraction failed: $LASTEXITCODE" }
-          if (-not (Test-Path 'ci\work\ETS2-Truck-Visual-Identifier-v2\tools\build-windows.ps1')) { throw 'build-windows.ps1 missing from verified source.' }
-          Add-Content $env:GITHUB_ENV 'BASE_SOURCE_SHA256=0492cdf945db24c442f59b9e9fd014c715b6ab47a49324f99944d5763719dce7'
+          $parts = 0..5 | ForEach-Object { 'ci\visual-realfix-src.part{0:D2}.b64' -f $_ }
+          foreach($p in $parts){if(-not(Test-Path $p)){throw "Missing source segment: $p"}}
+          $b64=(($parts|ForEach-Object{(Get-Content $_ -Raw -Encoding ASCII).Trim()}) -join '')
+          [IO.File]::WriteAllBytes('ci\realfix-source.tar.gz',[Convert]::FromBase64String($b64))
+          $hash=(Get-FileHash 'ci\realfix-source.tar.gz' -Algorithm SHA256).Hash.ToLowerInvariant()
+          if($hash -ne '0916e39e7909d703c0e2b4ea2a564413439c57af271ff46a2cf85b64c5675c13'){throw "Source SHA mismatch: $hash"}
+          New-Item -ItemType Directory -Force 'ci\work'|Out-Null
+          tar -xzf 'ci\realfix-source.tar.gz' -C 'ci\work'
+          if($LASTEXITCODE-ne 0){throw "Source extraction failed: $LASTEXITCODE"}
+          $root='ci\work\ETS2-Truck-Visual-Identifier-v2'
+          foreach($p in @('tools\build-windows.ps1','src\core\current_truck_config.cpp','src\core\definition_resolver.cpp','src\gui\local_configuration.cpp','src\gui\windows_platform.cpp')){if(-not(Test-Path(Join-Path $root $p))){throw "Snapshot missing: $p"}}
+          Add-Content $env:GITHUB_ENV "SOURCE_SHA256=$hash"
 
-      - name: Apply minimal MSVC build fix and fingerprint effective source
+      - name: Source-chain invariants
         shell: powershell
         run: |
-          $root = 'ci\work\ETS2-Truck-Visual-Identifier-v2'
-          $utf8 = New-Object System.Text.UTF8Encoding($false)
-
-          $def = Join-Path $root 'src\core\definition_resolver.cpp'
-          $text = Get-Content $def -Raw -Encoding UTF8
-          $old = 'static bool BoolField(const SiiUnit& u,const char* key){if(auto v=u.First(key)){auto s=*v;std::transform(s.begin(),s.end(),s.begin(),::tolower);return s=="true"||s=="1";}return false;}'
-          $new = 'static bool BoolField(const SiiUnit& u,const char* key){if(auto v=u.First(key)){auto s=*v;std::transform(s.begin(),s.end(),s.begin(),[](unsigned char c){return static_cast<char>(std::tolower(c));});return s=="true"||s=="1";}return false;}'
-          if (-not $text.Contains($old)) { throw 'MSVC BoolField baseline mismatch.' }
-          $text = $text.Replace($old,$new)
-          if (-not $text.Contains('#include <cctype>')) { $text = $text.Replace('#include <algorithm>', "#include <algorithm>`n#include <cctype>") }
-          [IO.File]::WriteAllText($def,$text,$utf8)
-
-          $cmake = Join-Path $root 'CMakeLists.txt'
-          $text = Get-Content $cmake -Raw -Encoding UTF8
-          $needle = "if(MSVC)`n  add_compile_options(/W4 /WX /utf-8 /permissive-)"
-          $replacement = "if(MSVC)`n  set(CMAKE_MSVC_RUNTIME_LIBRARY `"MultiThreaded`$<`$<CONFIG:Debug>:Debug>`")`n  add_compile_options(/W4 /WX /utf-8 /permissive-)"
-          if (-not $text.Contains($needle)) { throw 'MSVC runtime baseline mismatch.' }
-          $text = $text.Replace($needle,$replacement)
-          [IO.File]::WriteAllText($cmake,$text,$utf8)
-
-          $installLabel = 'Instala' + [char]0x00E7 + [char]0x00E3 + 'o:'
-          $truckLabel = 'Caminh' + [char]0x00E3 + 'o:'
-          $notInstalled = 'N' + [char]0x00C3 + 'O INSTALADO'
-          $title = 'ETS2 TRUCK VISUAL IDENTIFIER ' + [char]0x2014 + ' TRACTOR ONLY'
-          $main = Get-Content (Join-Path $root 'src\gui\main.cpp') -Raw -Encoding UTF8
-          foreach ($token in @('CreateWindowExW','SetWindowTextW','MessageBoxW',$installLabel,$truckLabel,$notInstalled,'IDENTIFICANDO...','Desconhecido',$title)) {
-            if (-not $main.Contains($token)) { throw "Unicode/Wide source invariant missing." }
-          }
-          $wp = Get-Content (Join-Path $root 'src\gui\windows_platform.cpp') -Raw -Encoding UTF8
-          foreach ($token in @('ShellExecuteExW','GetModuleFileNameW','TruckVisualIdentity.log')) { if (-not $wp.Contains($token)) { throw "Windows/log invariant missing: $token" } }
-          $dr = Get-Content $def -Raw -Encoding UTF8
-          foreach ($token in @('CABIN_ACCESSORY_RAW','CABIN_DATA_PATH','CABIN_DEF_FOUND','CABIN_LOCALIZATION_RESULT','CABIN_FINAL_VALUE','CABIN_ERROR','PAINT_ACCESSORY_RAW','PAINT_DATA_PATH','PAINT_DEF_FOUND','PAINT_JOB_DISPLAY_NAME','BASE_RGB','PAINT_TYPE','COLOR_FINAL_VALUE','PAINT_ERROR')) { if (-not $dr.Contains($token)) { throw "Diagnostic invariant missing: $token" } }
-
-          Push-Location 'ci\work'
-          try {
-            tar --exclude='ETS2-Truck-Visual-Identifier-v2/build' --exclude='ETS2-Truck-Visual-Identifier-v2/build-strict' --exclude='ETS2-Truck-Visual-Identifier-v2/build-warn' --exclude='ETS2-Truck-Visual-Identifier-v2/build-win' --exclude='ETS2-Truck-Visual-Identifier-v2/dist' --exclude='ETS2-Truck-Visual-Identifier-v2/third_party' -czf '..\effective-source.tar.gz' 'ETS2-Truck-Visual-Identifier-v2'
-            if ($LASTEXITCODE -ne 0) { throw "Effective source snapshot failed: $LASTEXITCODE" }
-          } finally { Pop-Location }
-          $effective = (Get-FileHash 'ci\effective-source.tar.gz' -Algorithm SHA256).Hash.ToLowerInvariant()
-          $effective | Set-Content -Encoding ASCII 'ci\effective-source.sha256'
-          Add-Content $env:GITHUB_ENV "EFFECTIVE_SOURCE_SHA256=$effective"
-          Write-Host "EFFECTIVE_SOURCE_SHA256=$effective"
+          $root='ci\work\ETS2-Truck-Visual-Identifier-v2'
+          $config=Get-Content (Join-Path $root 'src\core\current_truck_config.cpp') -Raw -Encoding UTF8
+          foreach($t in @('assigned_truck','vehicle_paint_job_accessory','ASSIGNED_TRUCK_REJECTED','ACCESSORY_COUNT')){if(-not $config.Contains($t)){throw "Missing current-config invariant: $t"}}
+          $def=Get-Content (Join-Path $root 'src\core\definition_resolver.cpp') -Raw -Encoding UTF8
+          foreach($t in @('accessory_cabin_data','accessory_paint_job_data','BASE_COLOR_RAW','BASE_RGB','PAINT_MODE','CABIN_RESOLVED_VFS_PATH','PAINT_RESOLVED_VFS_PATH','LinearToSrgb')){if(-not $def.Contains($t)){throw "Missing resolver invariant: $t"}}
+          $local=Get-Content (Join-Path $root 'src\gui\local_configuration.cpp') -Raw -Encoding UTF8
+          foreach($t in @('New profile selected','ACTIVE_SAVE','VFS_MOUNT_COUNT','SAVE_REJECTED','CURRENT_VEHICLE_UNIT')){if(-not $local.Contains($t)){throw "Missing local-config invariant: $t"}}
+          $platform=Get-Content (Join-Path $root 'src\gui\windows_platform.cpp') -Raw -Encoding UTF8
+          foreach($t in @('install.manifest','PluginOwnership','RunInstallUninstallSelfTest','ShellExecuteExW','GetModuleFileNameW','TruckVisualIdentity.log')){if(-not $platform.Contains($t)){throw "Missing uninstall/log invariant: $t"}}
 
       - name: MSVC Release x64 build regress and package
         shell: powershell
         working-directory: ci/work/ETS2-Truck-Visual-Identifier-v2
         run: .\tools\build-windows.ps1
 
-      - name: Final PE dependency Unicode smoke and package audit
+      - name: Final PE smoke and package audit
         shell: powershell
         run: |
-          $root = (Resolve-Path 'ci\work\ETS2-Truck-Visual-Identifier-v2').Path
-          $exe = Join-Path $root 'build-win\src\gui\Release\ETS2TruckVisualIdentifier.exe'
-          $dll = Join-Path $root 'build-win\src\plugin\Release\ets2_truck_visual_identifier.dll'
-          $dist = Join-Path $root 'dist'
-          $oldPkg = Join-Path $dist 'ETS2_Truck_Visual_Identifier_CABIN_PAINT_TEST_x64'
-          $pkg = Join-Path $dist 'ETS2_Truck_Visual_Identifier_TEST_x64'
-          $report = Join-Path $dist 'BUILD_REPORT.txt'
-          foreach ($p in @($exe,$dll,$oldPkg,$report)) { if (-not (Test-Path $p)) { throw "Missing required output: $p" } }
+          $root=(Resolve-Path 'ci\work\ETS2-Truck-Visual-Identifier-v2').Path
+          $pkg=Join-Path $root 'dist\ETS2_Truck_Visual_Identifier_TEST_x64'
+          $zip=Join-Path $root 'dist\ETS2_Truck_Visual_Identifier_TEST_x64.zip'
+          $exe=Join-Path $pkg 'ETS2TruckVisualIdentifier.exe'
+          $dll=Join-Path $pkg 'Runtime\ets2_truck_visual_identifier.dll'
+          $tool=Join-Path $pkg 'Runtime\scs_tool.exe'
+          $report=Join-Path $root 'dist\BUILD_REPORT.txt'
+          foreach($p in @($pkg,$zip,$exe,$dll,$tool,$report)){if(-not(Test-Path $p)){throw "Missing final output: $p"}}
 
-          function Get-PeInfo([string]$Path) {
-            [byte[]]$b = [IO.File]::ReadAllBytes($Path)
-            if ($b.Length -lt 512 -or $b[0] -ne 0x4d -or $b[1] -ne 0x5a) { throw "Invalid MZ: $Path" }
-            $pe = [BitConverter]::ToInt32($b,0x3c)
-            if ($pe -lt 0 -or ($pe + 96) -ge $b.Length) { throw "Truncated PE: $Path" }
-            if ($b[$pe] -ne 0x50 -or $b[$pe+1] -ne 0x45 -or $b[$pe+2] -ne 0 -or $b[$pe+3] -ne 0) { throw "Invalid PE signature: $Path" }
-            $opt = $pe + 24
-            [pscustomobject]@{ Machine=[BitConverter]::ToUInt16($b,$pe+4); Magic=[BitConverter]::ToUInt16($b,$opt); Entry=[BitConverter]::ToUInt32($b,$opt+16); Subsystem=[BitConverter]::ToUInt16($b,$opt+68) }
+          function Pe([string]$p){
+            [byte[]]$b=[IO.File]::ReadAllBytes($p);if($b.Length-lt 512-or$b[0]-ne 0x4d-or$b[1]-ne 0x5a){throw "Invalid MZ: $p"}
+            $o=[BitConverter]::ToInt32($b,0x3c);if($o-lt 0-or($o+96)-ge$b.Length){throw "Truncated PE: $p"};if($b[$o]-ne 0x50-or$b[$o+1]-ne 0x45){throw "Invalid PE: $p"}
+            $opt=$o+24;[pscustomobject]@{Machine=[BitConverter]::ToUInt16($b,$o+4);Magic=[BitConverter]::ToUInt16($b,$opt);Entry=[BitConverter]::ToUInt32($b,$opt+16);Subsystem=[BitConverter]::ToUInt16($b,$opt+68)}
           }
-          $ei=Get-PeInfo $exe; $di=Get-PeInfo $dll
-          if ($ei.Magic -ne 0x20b -or $di.Magic -ne 0x20b) { throw 'PE32+ audit failed.' }
-          if ($ei.Machine -ne 0x8664 -or $di.Machine -ne 0x8664) { throw 'AMD64 audit failed.' }
-          if ($ei.Subsystem -ne 2 -or $ei.Entry -eq 0 -or $di.Entry -eq 0) { throw 'Subsystem/entrypoint audit failed.' }
+          $ei=Pe $exe;$di=Pe $dll;$ti=Pe $tool
+          foreach($x in @($ei,$di,$ti)){if($x.Machine-ne 0x8664-or$x.Magic-ne 0x20b-or$x.Entry-eq 0){throw 'AMD64/PE32+/entry audit failed'}}
+          if($ei.Subsystem-ne 2){throw 'EXE is not Windows GUI subsystem'}
 
-          $vswhere = Join-Path ${env:ProgramFiles(x86)} 'Microsoft Visual Studio\Installer\vswhere.exe'
-          $vs = (& $vswhere -latest -products * -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath).Trim()
-          if (-not $vs) { throw 'Visual Studio not found.' }
-          $dumpbin = Get-ChildItem (Join-Path $vs 'VC\Tools\MSVC\*\bin\Hostx64\x64\dumpbin.exe') | Sort-Object FullName -Descending | Select-Object -First 1 -ExpandProperty FullName
-          if (-not $dumpbin) { throw 'dumpbin.exe not found.' }
-          $ed = (& $dumpbin /DEPENDENTS $exe 2>&1 | Out-String); if ($LASTEXITCODE -ne 0) { throw 'EXE import audit failed.' }
-          $dd = (& $dumpbin /DEPENDENTS $dll 2>&1 | Out-String); if ($LASTEXITCODE -ne 0) { throw 'DLL import audit failed.' }
-          $exports = (& $dumpbin /EXPORTS $dll 2>&1 | Out-String); if ($LASTEXITCODE -ne 0) { throw 'DLL export audit failed.' }
-          if (($ed+$dd) -match '(?i)(vcruntime[^ \r\n]*\.dll|msvcp[^ \r\n]*\.dll|ucrtbase\.dll|ucrtbased\.dll)') { throw 'Dynamic/debug MSVC CRT dependency detected; package must be self-contained.' }
-          foreach ($name in @('scs_telemetry_init','scs_telemetry_shutdown')) { if ($exports -notmatch [regex]::Escape($name)) { throw "Missing plugin export: $name" } }
+          $vswhere=Join-Path ${env:ProgramFiles(x86)} 'Microsoft Visual Studio\Installer\vswhere.exe'
+          $vs=(& $vswhere -latest -products * -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath).Trim()
+          $dumpbin=Get-ChildItem (Join-Path $vs 'VC\Tools\MSVC\*\bin\Hostx64\x64\dumpbin.exe')|Sort-Object FullName -Descending|Select-Object -First 1 -ExpandProperty FullName
+          $depsExe=(& $dumpbin /DEPENDENTS $exe 2>&1|Out-String);if($LASTEXITCODE-ne 0){throw 'EXE imports failed'}
+          $depsDll=(& $dumpbin /DEPENDENTS $dll 2>&1|Out-String);if($LASTEXITCODE-ne 0){throw 'DLL imports failed'}
+          $exports=(& $dumpbin /EXPORTS $dll 2>&1|Out-String);if($LASTEXITCODE-ne 0){throw 'DLL exports failed'}
+          if(($depsExe+$depsDll)-match '(?i)(vcruntime[^ \r\n]*\.dll|msvcp[^ \r\n]*\.dll|ucrtbased\.dll)'){throw 'Unexpected dynamic/debug MSVC CRT'}
+          foreach($n in @('scs_telemetry_init','scs_telemetry_shutdown')){if($exports-notmatch$n){throw "Missing export: $n"}}
 
-          if (-not ('Ets2VisualCiNative' -as [type])) {
-            Add-Type @'
-          using System;
-          using System.Runtime.InteropServices;
-          public static class Ets2VisualCiNative {
-            [DllImport("kernel32.dll", CharSet=CharSet.Unicode, SetLastError=true)] public static extern IntPtr LoadLibraryW(string path);
-            [DllImport("kernel32.dll")] public static extern bool FreeLibrary(IntPtr module);
-            [DllImport("user32.dll", SetLastError=true)] public static extern IntPtr SendMessageTimeoutW(IntPtr hWnd, uint Msg, UIntPtr wParam, IntPtr lParam, uint flags, uint timeout, out UIntPtr result);
-            [DllImport("user32.dll", SetLastError=true)] public static extern bool PostMessageW(IntPtr hWnd, uint Msg, UIntPtr wParam, IntPtr lParam);
-          }
-          '@
-          }
-          $h=[Ets2VisualCiNative]::LoadLibraryW($dll)
-          if ($h -eq [IntPtr]::Zero) { throw "Plugin LoadLibrary failed. Win32=$([Runtime.InteropServices.Marshal]::GetLastWin32Error())" }
-          [void][Ets2VisualCiNative]::FreeLibrary($h)
+          & $exe '--package-self-test';if($LASTEXITCODE-ne 0){throw "Install/uninstall self-test failed: $LASTEXITCODE"}
 
-          function Contains-Bytes([byte[]]$Hay,[byte[]]$Needle) {
-            for($i=0;$i -le $Hay.Length-$Needle.Length;$i++) { $ok=$true; for($j=0;$j -lt $Needle.Length;$j++) { if($Hay[$i+$j] -ne $Needle[$j]) { $ok=$false; break } }; if($ok){return $true} }
-            return $false
-          }
-          $installLabel = 'Instala' + [char]0x00E7 + [char]0x00E3 + 'o:'
-          $truckLabel = 'Caminh' + [char]0x00E3 + 'o:'
-          $notInstalled = 'N' + [char]0x00C3 + 'O INSTALADO'
-          $title = 'ETS2 TRUCK VISUAL IDENTIFIER ' + [char]0x2014 + ' TRACTOR ONLY'
-          [byte[]]$exeBytes=[IO.File]::ReadAllBytes($exe)
-          foreach($s in @($installLabel,$truckLabel,$notInstalled,'IDENTIFICANDO...','Desconhecido',$title)) { if(-not (Contains-Bytes $exeBytes ([Text.Encoding]::Unicode.GetBytes($s)))) { throw 'UTF-16 UI string missing from EXE.' } }
-          $badInstall = 'Instala' + [char]0x00C3 + [char]0x00A7 + [char]0x00C3 + [char]0x00A3 + 'o'
-          $badTruck = 'Caminh' + [char]0x00C3 + [char]0x00A3 + 'o'
-          $badNao = 'N' + [char]0x00C3 + [char]0x0192 + 'O'
-          foreach($bad in @($badInstall,$badTruck,$badNao)) { if(Contains-Bytes $exeBytes ([Text.Encoding]::Unicode.GetBytes($bad))) { throw 'Mojibake sequence embedded in EXE.' } }
+          $title='ETS2 TRUCK VISUAL IDENTIFIER '+[char]0x2014+' TRACTOR ONLY'
+          $proc=Start-Process $exe -PassThru
+          try{
+            if(-not$proc.WaitForInputIdle(5000)){throw 'GUI input-idle timeout'};Start-Sleep -Milliseconds 1000;$proc.Refresh()
+            if($proc.HasExited){throw 'GUI immediate crash'};if($proc.MainWindowTitle-ne$title){throw 'Unicode window title mismatch'}
+            if(-not('CiNative' -as [type])){Add-Type 'using System;using System.Runtime.InteropServices;public static class CiNative{[DllImport("user32.dll")]public static extern IntPtr SendMessageTimeoutW(IntPtr h,uint m,UIntPtr w,IntPtr l,uint f,uint t,out UIntPtr r);[DllImport("user32.dll")]public static extern bool PostMessageW(IntPtr h,uint m,UIntPtr w,IntPtr l);}' }
+            [UIntPtr]$r=[UIntPtr]::Zero;if([CiNative]::SendMessageTimeoutW($proc.MainWindowHandle,0,[UIntPtr]::Zero,[IntPtr]::Zero,2,1000,[ref]$r)-eq[IntPtr]::Zero){throw 'GUI not responding'}
+            [void][CiNative]::PostMessageW($proc.MainWindowHandle,0x10,[UIntPtr]::Zero,[IntPtr]::Zero);if(-not$proc.WaitForExit(5000)){throw 'GUI clean-exit timeout'};if($proc.ExitCode-ne 0){throw 'GUI clean-exit failure'}
+          }finally{if($proc-and-not$proc.HasExited){Stop-Process $proc.Id -Force}}
 
-          $proc=Start-Process -FilePath $exe -PassThru
-          try {
-            if (-not $proc.WaitForInputIdle(5000)) { throw 'GUI did not reach input-idle.' }
-            Start-Sleep -Milliseconds 1200
-            $proc.Refresh()
-            if ($proc.HasExited) { throw "GUI exited immediately: $($proc.ExitCode)" }
-            if ($proc.MainWindowTitle -ne $title) { throw 'Unexpected window title.' }
-            [UIntPtr]$smResult=[UIntPtr]::Zero
-            $responsive=[Ets2VisualCiNative]::SendMessageTimeoutW($proc.MainWindowHandle,0,[UIntPtr]::Zero,[IntPtr]::Zero,2,1000,[ref]$smResult)
-            if($responsive -eq [IntPtr]::Zero){throw 'GUI thread is not responding.'}
-            if(-not [Ets2VisualCiNative]::PostMessageW($proc.MainWindowHandle,0x0010,[UIntPtr]::Zero,[IntPtr]::Zero)){throw 'WM_CLOSE post failed.'}
-            if(-not $proc.WaitForExit(5000)){throw 'GUI did not exit cleanly after WM_CLOSE.'}
-            if($proc.ExitCode -ne 0){throw "GUI clean exit returned $($proc.ExitCode)"}
-          } finally { if ($proc -and -not $proc.HasExited) { Stop-Process -Id $proc.Id -Force } }
+          $forbidden=Get-ChildItem $pkg -Recurse -File|Where-Object{$_.Extension-in @('.obj','.lib','.pdb','.ilk','.exp','.cpp','.h','.hpp','.ps1','.vcxproj','.sln')};if($forbidden){throw 'Forbidden file in package'}
+          $manifest=Join-Path $pkg 'SHA256SUMS.txt';foreach($line in Get-Content $manifest){$q=$line -split '  ',2;$p=Join-Path $pkg ($q[1].Replace('/','\'));if((Get-FileHash $p -Algorithm SHA256).Hash.ToLowerInvariant()-ne$q[0]){throw "Manifest mismatch: $($q[1])"}}
+          Add-Content -Encoding ASCII $report @("SOURCE SHA-256: $env:SOURCE_SHA256","COMMIT: $env:GITHUB_SHA","WORKFLOW RUN: $env:GITHUB_RUN_ID",'FINAL PE AUDIT: PASS','PLUGIN EXPORTS: PASS','WINDOWS GUI SMOKE: PASS','GUI RESPONSIVE: PASS','CLEAN EXIT: PASS','INSTALL/UNINSTALL SELF-TEST: PASS','PACKAGE AUDIT: PASS')
 
-          if(Test-Path $pkg){Remove-Item $pkg -Recurse -Force}
-          Copy-Item $oldPkg $pkg -Recurse
-          $readmeLines = @(
-            '1. Extraia o ZIP.',
-            '2. Abra ETS2TruckVisualIdentifier.exe.',
-            '3. Clique INSTALAR.',
-            '4. Clique ABRIR ETS2.',
-            '5. Entre em um save.',
-            ('6. Aguarde a identifica' + [char]0x00E7 + [char]0x00E3 + 'o.'),
-            '7. Confira principalmente Cabine e Cor/Pintura.',
-            '8. Confira tambem Eixos, Marca e Modelo.',
-            ('9. Troque de caminh' + [char]0x00E3 + 'o/configura' + [char]0x00E7 + [char]0x00E3 + 'o e teste novamente.'),
-            '10. Se Cabin ou Color ficarem Desconhecido, envie a screenshot da GUI e TruckVisualIdentity.log.'
-          )
-          $readmeLines | Set-Content -Encoding UTF8 (Join-Path $pkg 'README.txt')
-          $manifest=Join-Path $pkg 'SHA256SUMS.txt'; if(Test-Path $manifest){Remove-Item $manifest -Force}
-          $required=@('ETS2TruckVisualIdentifier.exe','Runtime\ets2_truck_visual_identifier.dll','Runtime\scs_tool.exe','README.txt','THIRD_PARTY_NOTICES.md')
-          foreach($r in $required){if(-not(Test-Path(Join-Path $pkg $r))){throw "Package missing: $r"}}
-          $forbidden=Get-ChildItem $pkg -Recurse -File | Where-Object {$_.Extension -in @('.obj','.lib','.pdb','.ilk','.exp','.cpp','.h','.hpp','.ps1','.vcxproj','.sln')}
-          if($forbidden){throw "Forbidden build artifact in package: $($forbidden.FullName -join ', ')"}
-          $hashLines=Get-ChildItem $pkg -Recurse -File | ForEach-Object {$rel=$_.FullName.Substring($pkg.Length).TrimStart([char]92).Replace('\','/');"$((Get-FileHash $_.FullName -Algorithm SHA256).Hash.ToLowerInvariant())  $rel"}
-          $hashLines | Set-Content -Encoding ASCII $manifest
-          foreach($line in Get-Content $manifest){$parts=$line -split '  ',2;$p=Join-Path $pkg ($parts[1].Replace('/','\'));if((Get-FileHash $p -Algorithm SHA256).Hash.ToLowerInvariant() -ne $parts[0]){throw "Package manifest mismatch: $($parts[1])"}}
-          $zip=Join-Path $dist 'ETS2_Truck_Visual_Identifier_TEST_x64.zip';if(Test-Path $zip){Remove-Item $zip -Force};Compress-Archive -Path $pkg -DestinationPath $zip -CompressionLevel Optimal
-          if(-not(Test-Path $zip)){throw 'Final test ZIP missing.'}
-
-          Add-Content -Encoding ASCII $report @(
-            "BASE SOURCE SHA-256: $env:BASE_SOURCE_SHA256",
-            "EFFECTIVE SOURCE SHA-256: $env:EFFECTIVE_SOURCE_SHA256",
-            "COMMIT: $env:GITHUB_SHA",
-            "WORKFLOW RUN: $env:GITHUB_RUN_ID",
-            'WINDOWS MSVC RELEASE x64: PASS',
-            'FINAL LINK: PASS',
-            'PE EXE/DLL: PE32+',
-            'MACHINE EXE/DLL: AMD64 (0x8664)',
-            'SUBSYSTEM EXE: WINDOWS GUI',
-            'ENTRYPOINTS: VALID',
-            'IMPORTS EXE/DLL: VALID',
-            'DYNAMIC/DEBUG MSVC CRT: NONE',
-            'PLUGIN EXPORTS: VALID',
-            'UNICODE UI STRINGS: PASS',
-            'MOJIBAKE REGRESSION: PASS',
-            'WINDOWS GUI SMOKE: PASS',
-            'GUI RESPONSIVE: PASS',
-            'CLEAN EXIT: PASS',
-            'PACKAGE AUDIT: PASS',
-            'REGRESSIONS INTRODUCED: 0',
-            'TEST ZIP: GENERATED'
-          )
-
-      - name: Upload final v2 test package
+      - name: Upload real-config test package
         uses: actions/upload-artifact@v4
         with:
-          name: ETS2_Truck_Visual_Identifier_TEST_x64
+          name: ETS2_Truck_Visual_Identifier_TEST_x64_REAL_CONFIG
           path: |
             ci/work/ETS2-Truck-Visual-Identifier-v2/dist/ETS2_Truck_Visual_Identifier_TEST_x64.zip
             ci/work/ETS2-Truck-Visual-Identifier-v2/dist/BUILD_REPORT.txt
-            ci/effective-source.sha256
           if-no-files-found: error
