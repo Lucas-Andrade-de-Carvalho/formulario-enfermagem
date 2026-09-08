@@ -37,7 +37,6 @@ jobs:
           if($remoteParts.Count-ne$expectedCount){throw "PARTS FOUND=$($remoteParts.Count), EXPECTED=$expectedCount"}
           $expectedNames=0..8|ForEach-Object{'visual-audit-src.part{0:D2}.b64'-f$_}
           foreach($p in $remoteParts){if($expectedNames-notcontains$p.Name){throw "Unexpected audited source part: $($p.Name)"}}
-
           $archive='ci\audited-source.tar.gz'
           if(Test-Path $archive){Remove-Item $archive -Force}
           $out=[IO.File]::Open($archive,[IO.FileMode]::CreateNew,[IO.FileAccess]::Write,[IO.FileShare]::None)
@@ -62,7 +61,6 @@ jobs:
           Write-Host "PARTS EXPECTED: $expectedCount";Write-Host "PARTS FOUND: $($remoteParts.Count)";Write-Host 'MISSING: 0';Write-Host 'UNEXPECTED: 0';Write-Host 'DUPLICATES: 0'
           Write-Host "EXPECTED_SOURCE_SHA256=$expectedFinal";Write-Host "ACTUAL_SOURCE_SHA256=$actualFinal"
           if($actualFinal-ne$expectedFinal){throw "Reconstructed source SHA mismatch expected=$expectedFinal actual=$actualFinal"}
-
           $entries=@(& tar -tzf $archive);if($LASTEXITCODE-ne0-or-not$entries){throw 'Archive listing failed or archive empty.'}
           foreach($entry in $entries){$n=$entry.Replace('\','/');if($n.StartsWith('/')-or$n-match'^[A-Za-z]:'-or($n.Split('/')-contains'..')){throw "Unsafe archive path: $entry"}}
           if($entries-notcontains'ETS2-Truck-Visual-Identifier-v2/CMakeLists.txt'){throw 'Expected source root missing from archive.'}
@@ -74,6 +72,41 @@ jobs:
           Add-Content $env:GITHUB_ENV "SOURCE_BRANCH=$env:GITHUB_REF_NAME"
           Add-Content $env:GITHUB_ENV "SOURCE_COMMIT=$env:GITHUB_SHA"
           @("SOURCE_ARCHIVE_SHA256=$actualFinal","BRANCH=$env:GITHUB_REF_NAME","COMMIT=$env:GITHUB_SHA")|Set-Content -Encoding ASCII 'ci\SOURCE_PROVENANCE.txt'
+
+      - name: Apply audited MSVC portability fix
+        shell: powershell
+        run: |
+          $ErrorActionPreference='Stop'
+          $patch=(Resolve-Path 'ci\msvc-c4505.patch').Path
+          $patchSha=(Get-FileHash $patch -Algorithm SHA256).Hash.ToLowerInvariant()
+          $expectedPatch='a74bf770033ec4ef23ef514baea5734831eeb4103e7a0dbd216fdecacdcdea82'
+          if($patchSha-ne$expectedPatch){throw "MSVC patch SHA mismatch expected=$expectedPatch actual=$patchSha"}
+          $root=(Resolve-Path 'ci\work\ETS2-Truck-Visual-Identifier-v2').Path
+          Push-Location $root
+          try{
+            & git apply --check --whitespace=nowarn $patch
+            if($LASTEXITCODE-ne0){throw "git apply --check failed: $LASTEXITCODE"}
+            & git apply --whitespace=nowarn $patch
+            if($LASTEXITCODE-ne0){throw "git apply failed: $LASTEXITCODE"}
+          }finally{Pop-Location}
+          $resultFile=Join-Path $root 'src\gui\windows_platform.cpp'
+          $resultSha=(Get-FileHash $resultFile -Algorithm SHA256).Hash.ToLowerInvariant()
+          $expectedResult='4defdba6b1c39cdcabac769bf0c7c3046886eaab2878889cbd654cd31f49da93'
+          if($resultSha-ne$expectedResult){throw "Patched windows_platform.cpp SHA mismatch expected=$expectedResult actual=$resultSha"}
+          $identity="BASE=$env:SOURCE_SHA256`nPATCH=$patchSha`nRESULT_WINDOWS_PLATFORM=$resultSha`n"
+          $sha=[Security.Cryptography.SHA256]::Create()
+          try{$digest=$sha.ComputeHash([Text.Encoding]::ASCII.GetBytes($identity))}finally{$sha.Dispose()}
+          $effective=([BitConverter]::ToString($digest)).Replace('-','').ToLowerInvariant()
+          $expectedEffective='1cff8e9b4d6169eaf3dec1621b4e203621e4ac6a9066f847a3d51abc921f670f'
+          if($effective-ne$expectedEffective){throw "Effective source identity mismatch expected=$expectedEffective actual=$effective"}
+          Add-Content $env:GITHUB_ENV "BUILD_FIX_PATCH_SHA256=$patchSha"
+          Add-Content $env:GITHUB_ENV "EFFECTIVE_SOURCE_ID=$effective"
+          Add-Content -Encoding ASCII 'ci\SOURCE_PROVENANCE.txt' "BUILD_FIX_PATCH_SHA256=$patchSha"
+          Add-Content -Encoding ASCII 'ci\SOURCE_PROVENANCE.txt' "RESULT_WINDOWS_PLATFORM_SHA256=$resultSha"
+          Add-Content -Encoding ASCII 'ci\SOURCE_PROVENANCE.txt' "EFFECTIVE_SOURCE_ID=$effective"
+          Write-Host "BUILD_FIX_PATCH_SHA256=$patchSha"
+          Write-Host "RESULT_WINDOWS_PLATFORM_SHA256=$resultSha"
+          Write-Host "EFFECTIVE_SOURCE_ID=$effective"
 
       - name: Architecture and diagnostics invariants
         shell: powershell
@@ -89,6 +122,7 @@ jobs:
           $uninstallFailed='DESINSTALA'+[char]0x00C7+[char]0x00C3+'O FALHOU'
           $operationCancelled='OPERA'+[char]0x00C7+[char]0x00C3+'O CANCELADA'
           foreach($t in @('install.manifest','PluginOwnership',$uninstallFailed,$operationCancelled,'RunInstallUninstallSelfTest')){if(-not$win.Contains($t)){throw "Uninstall invariant missing: $t"}}
+          if($win.Contains('static fs::path PluginDest()')){throw 'Removed dead PluginDest() unexpectedly present after audited patch.'}
 
       - name: MSVC Release x64 build Windows tests and package
         shell: powershell
@@ -128,7 +162,7 @@ jobs:
           $allowed=@('ETS2TruckVisualIdentifier.exe','README.txt','SHA256SUMS.txt','THIRD_PARTY_NOTICES.md','Runtime/ets2_truck_visual_identifier.dll','Runtime/scs_tool.exe');$actual=Get-ChildItem $pkg -Recurse -File|ForEach-Object{$_.FullName.Substring($pkg.Length).TrimStart([char]92).Replace('\','/')};foreach($a in $allowed){if($actual-notcontains$a){throw "Package missing: $a"}};foreach($a in $actual){if($allowed-notcontains$a){throw "Unexpected package file: $a"}}
           $forbidden=Get-ChildItem $pkg -Recurse -File|Where-Object{$_.Extension-in@('.obj','.pdb','.lib','.exp','.ilk','.cpp','.h','.hpp','.ps1','.vcxproj','.sln')};if($forbidden){throw "Forbidden package artifact: $($forbidden.FullName -join ', ')"}
           $readme=Get-Content (Join-Path $pkg 'README.txt') -Raw -Encoding UTF8;foreach($m in @('TESTE A','TESTE B','TESTE C','TESTE D','TESTE E','TESTE F','TruckVisualIdentity.log')){if(-not$readme.Contains($m)){throw "README marker missing: $m"}}
-          Add-Content -Encoding ASCII $report "SOURCE_ARCHIVE_SHA256=$env:SOURCE_SHA256";Add-Content -Encoding ASCII $report "BRANCH=$env:SOURCE_BRANCH";Add-Content -Encoding ASCII $report "COMMIT=$env:SOURCE_COMMIT";Add-Content -Encoding ASCII $report 'WINDOWS HASHFS/VFS TEST: PASS (ctest)';Add-Content -Encoding ASCII $report 'CABIN/PAINT WINDOWS TESTS: PASS (ctest)';Add-Content -Encoding ASCII $report 'UNINSTALL WINDOWS TEST: PASS';Add-Content -Encoding ASCII $report 'FINAL PE AUDIT: PASS';Add-Content -Encoding ASCII $report 'WINDOWS GUI SMOKE TEST: PASS';Add-Content -Encoding ASCII $report 'PACKAGE AUDIT: PASS'
+          Add-Content -Encoding ASCII $report "SOURCE_ARCHIVE_SHA256=$env:SOURCE_SHA256";Add-Content -Encoding ASCII $report "BUILD_FIX_PATCH_SHA256=$env:BUILD_FIX_PATCH_SHA256";Add-Content -Encoding ASCII $report "EFFECTIVE_SOURCE_ID=$env:EFFECTIVE_SOURCE_ID";Add-Content -Encoding ASCII $report "BRANCH=$env:SOURCE_BRANCH";Add-Content -Encoding ASCII $report "COMMIT=$env:SOURCE_COMMIT";Add-Content -Encoding ASCII $report 'WINDOWS HASHFS/VFS TEST: PASS (ctest)';Add-Content -Encoding ASCII $report 'CABIN/PAINT WINDOWS TESTS: PASS (ctest)';Add-Content -Encoding ASCII $report 'UNINSTALL WINDOWS TEST: PASS';Add-Content -Encoding ASCII $report 'FINAL PE AUDIT: PASS';Add-Content -Encoding ASCII $report 'WINDOWS GUI SMOKE TEST: PASS';Add-Content -Encoding ASCII $report 'PACKAGE AUDIT: PASS'
           Copy-Item 'ci\SOURCE_PROVENANCE.txt' (Join-Path $dist 'SOURCE_PROVENANCE.txt') -Force
 
       - name: Upload audited CabinPaint package
