@@ -16,15 +16,16 @@ jobs:
       - name: Reconstruct exact v2 source
         shell: powershell
         run: |
-          $parts = Get-ChildItem 'ci\visual-v2-src.part*.b64' | Sort-Object Name
+          $parts = Get-ChildItem 'ci\visual-v2b-src.part*.b64' | Sort-Object Name
           if ($parts.Count -ne 4) { throw "Expected 4 source parts, got $($parts.Count)." }
           $b64 = (($parts | ForEach-Object { (Get-Content $_.FullName -Raw -Encoding ASCII).Trim() }) -join '')
           [IO.File]::WriteAllBytes('ci\visual-v2-src.tar.gz', [Convert]::FromBase64String($b64))
           $hash = (Get-FileHash 'ci\visual-v2-src.tar.gz' -Algorithm SHA256).Hash.ToLowerInvariant()
-          if ($hash -ne '4edf53ddc534fc213c56edad03671212df6dfc45d294d6dbd68edb6d28b5c081') { throw "Source SHA-256 mismatch: $hash" }
+          if ($hash -ne '0492cdf945db24c442f59b9e9fd014c715b6ab47a49324f99944d5763719dce7') { throw "Source SHA-256 mismatch: $hash" }
           New-Item -ItemType Directory -Force 'ci\work' | Out-Null
           tar -xzf 'ci\visual-v2-src.tar.gz' -C 'ci\work'
           if ($LASTEXITCODE -ne 0) { throw "Source extraction failed: $LASTEXITCODE" }
+          if (-not (Test-Path 'ci\work\ETS2-Truck-Visual-Identifier-v2\tools\build-windows.ps1')) { throw 'build-windows.ps1 missing from exact source snapshot.' }
 
       - name: MSVC Release x64 build regress and package
         shell: powershell
