@@ -96,11 +96,16 @@ jobs:
             if ($LASTEXITCODE -ne 0) { throw "Fix patch apply failed with exit code $LASTEXITCODE." }
           } finally { Pop-Location }
 
-          $main = Get-Content 'ci\ETS2-Truck-Identifier\src\gui\main.cpp' -Raw -Encoding UTF8
-          foreach ($required in @('Instalação','Caminhão','NÃO INSTALADO','ETS2 TRUCK IDENTIFIER — TRACTOR ONLY')) {
-            if (-not $main.Contains($required)) { throw "UTF-8 source regression: missing '$required'." }
+          $mainPath = 'ci\ETS2-Truck-Identifier\src\gui\main.cpp'
+          $strictUtf8 = New-Object System.Text.UTF8Encoding($false, $true)
+          $main = $strictUtf8.GetString([IO.File]::ReadAllBytes($mainPath))
+          $installWord = 'Instala' + [char]0x00E7 + [char]0x00E3 + 'o'
+          $truckWord = 'Caminh' + [char]0x00E3 + 'o'
+          $notInstalled = 'N' + [char]0x00C3 + 'O INSTALADO'
+          $title = 'ETS2 TRUCK IDENTIFIER ' + [char]0x2014 + ' TRACTOR ONLY'
+          foreach ($required in @($installWord,$truckWord,$notInstalled,$title)) {
+            if (-not $main.Contains($required)) { throw 'UTF-8 source regression: expected Unicode sequence missing.' }
           }
-          if ($main.Contains('InstalaÃ') -or $main.Contains('CaminhÃ') -or $main.Contains([char]0xFFFD)) { throw 'Mojibake detected in source before MSVC.' }
 
       - name: Build link regress Unicode test and package
         shell: powershell
