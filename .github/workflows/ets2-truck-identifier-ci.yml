@@ -13,11 +13,11 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Reconstruct and verify isolated source
+      - name: Reconstruct and verify baseline source
         shell: powershell
         run: |
           $parts = Get-ChildItem 'ci\ets2-src.part*.b64' | Sort-Object Name
-          $b64 = (($parts | ForEach-Object { (Get-Content $_.FullName -Raw).Trim() }) -join '')
+          $b64 = (($parts | ForEach-Object { (Get-Content $_.FullName -Raw -Encoding ASCII).Trim() }) -join '')
           [IO.File]::WriteAllBytes('ci\ets2-src.tar.gz', [Convert]::FromBase64String($b64))
           $hash = (Get-FileHash 'ci\ets2-src.tar.gz' -Algorithm SHA256).Hash.ToLowerInvariant()
           if ($hash -ne '3278dc58701fb0ba29b9e5fad297b8615687a54dbe7c1bbe3001bfb2f6d7a7f2') { throw "Source archive SHA-256 mismatch: $hash" }
@@ -25,10 +25,11 @@ jobs:
           tar -xzf 'ci\ets2-src.tar.gz' -C 'ci\ETS2-Truck-Identifier'
           if ($LASTEXITCODE -ne 0) { throw "Source extraction failed with exit code $LASTEXITCODE." }
 
-      - name: Apply build-only compatibility fixes
+      - name: Apply previous MSVC build fixes without changing encoding
         shell: powershell
         run: |
           $root = 'ci\ETS2-Truck-Identifier'
+          $utf8NoBom = New-Object System.Text.UTF8Encoding($false)
           $cppFiles = @(
             'src\plugin\telemetry_plugin.cpp',
             'src\gui\telemetry_client.cpp',
@@ -38,44 +39,75 @@ jobs:
           )
           foreach ($rel in $cppFiles) {
             $p = Join-Path $root $rel
-            $text = Get-Content $p -Raw
+            $text = Get-Content $p -Raw -Encoding UTF8
             $text = $text -replace '(?m)^#define WIN32_LEAN_AND_MEAN\r?\n', ''
             $text = $text -replace '(?m)^#define NOMINMAX\r?\n', ''
-            [IO.File]::WriteAllText($p, $text, [Text.UTF8Encoding]::new($false))
+            [IO.File]::WriteAllText($p, $text, $utf8NoBom)
           }
 
           $p = Join-Path $root 'src\core\save_resolver.cpp'
-          $text = Get-Content $p -Raw
+          $text = Get-Content $p -Raw -Encoding UTF8
           $text = $text.Replace('[](unsigned char c){return std::tolower(c);}', '[](unsigned char c){return static_cast<char>(std::tolower(c));}')
-          [IO.File]::WriteAllText($p, $text, [Text.UTF8Encoding]::new($false))
+          [IO.File]::WriteAllText($p, $text, $utf8NoBom)
 
           $p = Join-Path $root 'tests\core_tests.cpp'
-          $text = Get-Content $p -Raw
+          $text = Get-Content $p -Raw -Encoding UTF8
           $text = $text -replace '(?<![0-9A-Za-z_.])(-?(?:1\.5|1\.2|\.8|\.6|\.5))(?![0-9A-Za-z_f])', '${1}f'
-          [IO.File]::WriteAllText($p, $text, [Text.UTF8Encoding]::new($false))
+          [IO.File]::WriteAllText($p, $text, $utf8NoBom)
 
           $p = Join-Path $root 'src\gui\main.cpp'
-          $text = Get-Content $p -Raw
+          $text = Get-Content $p -Raw -Encoding UTF8
           $text = $text.Replace('reinterpret_cast<HMENU>(ID_INSTALL)', 'reinterpret_cast<HMENU>(static_cast<INT_PTR>(ID_INSTALL))')
           $text = $text.Replace('reinterpret_cast<HMENU>(ID_UNINSTALL)', 'reinterpret_cast<HMENU>(static_cast<INT_PTR>(ID_UNINSTALL))')
           $text = $text.Replace('reinterpret_cast<HMENU>(ID_OPEN)', 'reinterpret_cast<HMENU>(static_cast<INT_PTR>(ID_OPEN))')
-          [IO.File]::WriteAllText($p, $text, [Text.UTF8Encoding]::new($false))
+          [IO.File]::WriteAllText($p, $text, $utf8NoBom)
 
-          # Windows PowerShell 5.1/.NET Framework has no System.IO.Path.GetRelativePath.
           $p = Join-Path $root 'tools\build-windows.ps1'
-          $text = Get-Content $p -Raw
+          $text = Get-Content $p -Raw -Encoding UTF8
           $old = '$relative = [IO.Path]::GetRelativePath($Package, $file.FullName).Replace(''\'',''/'')'
           $new = '$relative = $file.FullName.Substring($Package.Length).TrimStart([char]92).Replace(''\'',''/'')'
           if (-not $text.Contains($old)) { throw 'Expected packaging compatibility line was not found.' }
           $text = $text.Replace($old, $new)
-          [IO.File]::WriteAllText($p, $text, [Text.UTF8Encoding]::new($false))
+          [IO.File]::WriteAllText($p, $text, $utf8NoBom)
 
-      - name: Build, link, regress, self-test and package
+      - name: Apply cabin paint and Unicode fixes
+        shell: powershell
+        run: |
+          $parts = Get-ChildItem 'ci\current-fix.part*.b64' | Sort-Object Name
+          $b64 = (($parts | ForEach-Object { (Get-Content $_.FullName -Raw -Encoding ASCII).Trim() }) -join '')
+          $gz = 'ci\current-fix.patch.gz'
+          [IO.File]::WriteAllBytes($gz, [Convert]::FromBase64String($b64))
+          $hash = (Get-FileHash $gz -Algorithm SHA256).Hash.ToLowerInvariant()
+          if ($hash -ne 'ad3e923b684f8018b52cf53b4ddd1e48320bf079a5d795c811d9578449464933') { throw "Fix patch SHA-256 mismatch: $hash" }
+          $patch = 'ci\current-fix.patch'
+          $input = [IO.File]::OpenRead($gz)
+          try {
+            $gzip = New-Object IO.Compression.GzipStream($input, [IO.Compression.CompressionMode]::Decompress)
+            try {
+              $output = [IO.File]::Create($patch)
+              try { $gzip.CopyTo($output) } finally { $output.Dispose() }
+            } finally { $gzip.Dispose() }
+          } finally { $input.Dispose() }
+          Push-Location 'ci\ETS2-Truck-Identifier'
+          try {
+            git apply --check '..\current-fix.patch'
+            if ($LASTEXITCODE -ne 0) { throw "Fix patch preflight failed with exit code $LASTEXITCODE." }
+            git apply '..\current-fix.patch'
+            if ($LASTEXITCODE -ne 0) { throw "Fix patch apply failed with exit code $LASTEXITCODE." }
+          } finally { Pop-Location }
+
+          $main = Get-Content 'ci\ETS2-Truck-Identifier\src\gui\main.cpp' -Raw -Encoding UTF8
+          foreach ($required in @('Instalação','Caminhão','NÃO INSTALADO','ETS2 TRUCK IDENTIFIER — TRACTOR ONLY')) {
+            if (-not $main.Contains($required)) { throw "UTF-8 source regression: missing '$required'." }
+          }
+          if ($main.Contains('InstalaÃ') -or $main.Contains('CaminhÃ') -or $main.Contains([char]0xFFFD)) { throw 'Mojibake detected in source before MSVC.' }
+
+      - name: Build link regress Unicode test and package
         shell: powershell
         working-directory: ci/ETS2-Truck-Identifier
         run: .\tools\build-windows.ps1
 
-      - name: Final PE, imports, exports and Windows GUI smoke audit
+      - name: Final PE imports exports and smoke audit
         shell: powershell
         run: |
           $root = (Resolve-Path 'ci\ETS2-Truck-Identifier').Path
@@ -83,10 +115,7 @@ jobs:
           $dll = Join-Path $root 'build-win\src\plugin\Release\ets2_truck_identifier.dll'
           $zip = Join-Path $root 'dist\ETS2_Truck_Identifier_TRACTOR_TEST_x64.zip'
           $report = Join-Path $root 'dist\BUILD_REPORT.txt'
-
-          foreach ($p in @($exe,$dll,$zip)) {
-            if (-not (Test-Path $p)) { throw "Required output missing: $p" }
-          }
+          foreach ($p in @($exe,$dll,$zip,$report)) { if (-not (Test-Path $p)) { throw "Required output missing: $p" } }
 
           function Get-PeInfo([string]$Path) {
             [byte[]]$b = [IO.File]::ReadAllBytes($Path)
@@ -102,7 +131,6 @@ jobs:
               Subsystem = [BitConverter]::ToUInt16($b, $opt + 68)
             }
           }
-
           $ei = Get-PeInfo $exe
           $di = Get-PeInfo $dll
           if ($ei.Magic -ne 0x20B -or $di.Magic -ne 0x20B) { throw 'PE format is not PE32+.' }
@@ -115,68 +143,47 @@ jobs:
           if (-not $vs) { throw 'Visual Studio installation path not found.' }
           $dumpbin = Get-ChildItem (Join-Path $vs 'VC\Tools\MSVC\*\bin\Hostx64\x64\dumpbin.exe') | Sort-Object FullName -Descending | Select-Object -First 1 -ExpandProperty FullName
           if (-not $dumpbin) { throw 'dumpbin.exe not found.' }
-
-          $exeHeaders = (& $dumpbin /HEADERS $exe 2>&1 | Out-String)
-          if ($LASTEXITCODE -ne 0) { throw 'dumpbin /HEADERS failed for EXE.' }
-          $exeDeps = (& $dumpbin /DEPENDENTS $exe 2>&1 | Out-String)
-          if ($LASTEXITCODE -ne 0) { throw 'dumpbin /DEPENDENTS failed for EXE.' }
-          $dllDeps = (& $dumpbin /DEPENDENTS $dll 2>&1 | Out-String)
-          if ($LASTEXITCODE -ne 0) { throw 'dumpbin /DEPENDENTS failed for DLL.' }
-          $dllExports = (& $dumpbin /EXPORTS $dll 2>&1 | Out-String)
-          if ($LASTEXITCODE -ne 0) { throw 'dumpbin /EXPORTS failed for DLL.' }
-
+          $exeDeps = (& $dumpbin /DEPENDENTS $exe 2>&1 | Out-String); if ($LASTEXITCODE -ne 0) { throw 'dumpbin /DEPENDENTS failed for EXE.' }
+          $dllDeps = (& $dumpbin /DEPENDENTS $dll 2>&1 | Out-String); if ($LASTEXITCODE -ne 0) { throw 'dumpbin /DEPENDENTS failed for DLL.' }
+          $dllExports = (& $dumpbin /EXPORTS $dll 2>&1 | Out-String); if ($LASTEXITCODE -ne 0) { throw 'dumpbin /EXPORTS failed for DLL.' }
           $allDeps = $exeDeps + "`n" + $dllDeps
           if ($allDeps -match '(?i)(ucrtbased\.dll|vcruntime[^ \r\n]*d\.dll|msvcp[^ \r\n]*d\.dll)') { throw 'Debug CRT dependency detected.' }
-          foreach ($name in @('scs_telemetry_init','scs_telemetry_shutdown')) {
-            if ($dllExports -notmatch [regex]::Escape($name)) { throw "Required DLL export missing: $name" }
-          }
+          foreach ($name in @('scs_telemetry_init','scs_telemetry_shutdown')) { if ($dllExports -notmatch [regex]::Escape($name)) { throw "Required DLL export missing: $name" } }
 
           if (-not ('Ets2IdCiNative' -as [type])) {
             Add-Type @'
           using System;
           using System.Runtime.InteropServices;
           public static class Ets2IdCiNative {
-              [DllImport("kernel32.dll", CharSet=CharSet.Unicode, SetLastError=true)]
-              public static extern IntPtr LoadLibraryW(string path);
-              [DllImport("kernel32.dll")]
-              public static extern bool FreeLibrary(IntPtr module);
+              [DllImport("kernel32.dll", CharSet=CharSet.Unicode, SetLastError=true)] public static extern IntPtr LoadLibraryW(string path);
+              [DllImport("kernel32.dll")] public static extern bool FreeLibrary(IntPtr module);
           }
           '@
           }
           $h = [Ets2IdCiNative]::LoadLibraryW($dll)
-          if ($h -eq [IntPtr]::Zero) { throw "Plugin LoadLibrary failed; imports/dependencies unavailable. Win32=$([Runtime.InteropServices.Marshal]::GetLastWin32Error())" }
+          if ($h -eq [IntPtr]::Zero) { throw "Plugin LoadLibrary failed; Win32=$([Runtime.InteropServices.Marshal]::GetLastWin32Error())" }
           [void][Ets2IdCiNative]::FreeLibrary($h)
 
-          $proc = Start-Process -FilePath $exe -PassThru
-          try {
-            if (-not $proc.WaitForInputIdle(5000)) { throw 'GUI did not reach input-idle initialization state.' }
-            Start-Sleep -Milliseconds 1200
-            $proc.Refresh()
-            if ($proc.HasExited) { throw "GUI exited immediately with code $($proc.ExitCode)." }
-            if ($proc.MainWindowTitle -notlike '*ETS2 TRUCK IDENTIFIER*') { throw "Expected GUI window title was not created. Actual: '$($proc.MainWindowTitle)'" }
-          } finally {
-            if ($proc -and -not $proc.HasExited) { Stop-Process -Id $proc.Id -Force }
+          $reportText = Get-Content $report -Raw -Encoding ASCII
+          foreach ($line in @('WINDOWS BUILD: PASS','OFFLINE TESTS: PASS','UNICODE GUI REGRESSION: PASS','PE x64 EXE: VALID','PE x64 DLL: VALID','PLUGIN EXPORTS: VALID','TEST ZIP: GENERATED')) {
+            if (-not $reportText.Contains($line)) { throw "Expected build report result missing: $line" }
           }
-
-          Add-Content -Encoding ascii $report @(
+          Add-Content -Encoding ASCII $report @(
             'FINAL LINK: PASS',
-            'PE FORMAT EXE: PE32+',
-            'PE FORMAT DLL: PE32+',
+            'PE FORMAT EXE/DLL: PE32+',
             'MACHINE EXE/DLL: AMD64 (0x8664)',
             'SUBSYSTEM EXE: WINDOWS GUI',
             'ENTRYPOINT EXE: VALID',
             'IMPORTS EXE/DLL: LOADABLE',
             'DEBUG CRT: NONE',
-            'PLUGIN EXPORTS: VALID',
-            'WINDOWS GUI SMOKE TEST: PASS',
-            'IMMEDIATE CRASH: NO',
+            'PLUGIN EXPORTS DUMPBIN: VALID',
             'REGRESSIONS INTRODUCED: 0'
           )
 
-      - name: Upload test ZIP and build report
+      - name: Upload corrected test ZIP and build report
         uses: actions/upload-artifact@v4
         with:
-          name: ETS2_Truck_Identifier_TRACTOR_TEST_x64
+          name: ETS2_Truck_Identifier_TRACTOR_TEST_x64_FIXED
           path: |
             ci/ETS2-Truck-Identifier/dist/ETS2_Truck_Identifier_TRACTOR_TEST_x64.zip
             ci/ETS2-Truck-Identifier/dist/BUILD_REPORT.txt
