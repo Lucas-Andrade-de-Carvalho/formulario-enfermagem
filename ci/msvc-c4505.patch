@@ -1,0 +1,16 @@
+diff --git a/src/gui/windows_platform.cpp b/src/gui/windows_platform.cpp
+index 597ba65..7a4fc13 100644
+--- a/src/gui/windows_platform.cpp
++++ b/src/gui/windows_platform.cpp
+@@ -141,11 +141,6 @@ static fs::path PluginDestForGame(const fs::path& game) {
+   return game / L"bin" / L"win_x64" / L"plugins" / L"ets2_truck_visual_identifier.dll";
+ }
+ 
+-static fs::path PluginDest() {
+-  const auto game = FindEts2GameDir();
+-  return game ? PluginDestForGame(*game) : fs::path{};
+-}
+-
+ static fs::path PackagedPlugin() {
+   return ExecutableDir() / L"Runtime" / L"ets2_truck_visual_identifier.dll";
+ }
