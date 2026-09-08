@@ -1,0 +1,39 @@
+name: ETS2 Truck Identifier Tractor Test x64
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - 'ci/ets2-truck-identifier-tractor-test'
+
+jobs:
+  release-x64:
+    runs-on: windows-2022
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Reconstruct and verify isolated source
+        shell: powershell
+        run: |
+          $parts = Get-ChildItem 'ci\ets2-src.part*.b64' | Sort-Object Name
+          $b64 = (($parts | ForEach-Object { (Get-Content $_.FullName -Raw).Trim() }) -join '')
+          [IO.File]::WriteAllBytes('ci\ets2-src.tar.gz', [Convert]::FromBase64String($b64))
+          $hash = (Get-FileHash 'ci\ets2-src.tar.gz' -Algorithm SHA256).Hash.ToLowerInvariant()
+          if ($hash -ne '3278dc58701fb0ba29b9e5fad297b8615687a54dbe7c1bbe3001bfb2f6d7a7f2') { throw "Source archive SHA-256 mismatch: $hash" }
+          New-Item -ItemType Directory -Force 'ci\ETS2-Truck-Identifier' | Out-Null
+          tar -xzf 'ci\ets2-src.tar.gz' -C 'ci\ETS2-Truck-Identifier'
+
+      - name: Build, test, validate and package
+        shell: powershell
+        working-directory: ci/ETS2-Truck-Identifier
+        run: .\tools\build-windows.ps1
+
+      - name: Upload test ZIP and build report
+        uses: actions/upload-artifact@v4
+        with:
+          name: ETS2_Truck_Identifier_TRACTOR_TEST_x64
+          path: |
+            ci/ETS2-Truck-Identifier/dist/ETS2_Truck_Identifier_TRACTOR_TEST_x64.zip
+            ci/ETS2-Truck-Identifier/dist/BUILD_REPORT.txt
+          if-no-files-found: error
