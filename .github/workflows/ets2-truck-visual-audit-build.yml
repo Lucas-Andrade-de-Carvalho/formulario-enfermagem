@@ -44,8 +44,8 @@ jobs:
           try{
             for($i=0;$i-lt$expectedCount;$i++){
               $row=$rows[$i];$name=$row['NAME'];$path=Join-Path 'ci' $name
-              if($name-ne('visual-audit-src.part{0:D2}.b64'-f$i)){throw "Manifest order/name mismatch at $i: $name"}
-              if(-not(Test-Path $path)){throw "Missing part $i: $path"}
+              if($name-ne('visual-audit-src.part{0:D2}.b64'-f$i)){throw "Manifest order/name mismatch at ${i}: $name"}
+              if(-not(Test-Path $path)){throw "Missing part ${i}: $path"}
               [byte[]]$raw=[IO.File]::ReadAllBytes((Resolve-Path $path))
               if($raw.Length-ne[int]$row['SIZE']){throw "Part $i size mismatch expected=$($row['SIZE']) actual=$($raw.Length)"}
               $actualPart=(Get-FileHash $path -Algorithm SHA256).Hash.ToLowerInvariant()
