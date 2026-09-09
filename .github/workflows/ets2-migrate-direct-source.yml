@@ -52,7 +52,7 @@ jobs:
           try {
             .\tools\source-fingerprint.ps1
             .\tools\source-invariants.ps1
-            $tree=(& git rev-parse HEAD^{tree}).Trim()
+            $tree=(& git rev-parse 'HEAD^{tree}').Trim()
             if(-not$tree){throw 'Unable to resolve final repaired Git tree.'}
           } finally {Pop-Location}
           Write-Host "FINAL_REPAIRED_GIT_TREE=$tree"
@@ -79,7 +79,7 @@ jobs:
           git add -A
           git commit -m 'Final: direct source with real SII save decoder gate'
           $head=(git rev-parse HEAD).Trim()
-          $tree=(git rev-parse HEAD^{tree}).Trim()
+          $tree=(git rev-parse 'HEAD^{tree}').Trim()
           Write-Host "DIRECT_SOURCE_COMMIT=$head"
           Write-Host "DIRECT_SOURCE_TREE=$tree"
           git push origin HEAD:refs/heads/fix/cabin-paint-final --force
