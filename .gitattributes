@@ -3,4 +3,10 @@ ci/visual-audit-src.manifest.txt text eol=lf
 ci/msvc-c4505.patch -text
 ci/windows-vfs-test-createprocess.patch -text
 ci/readme-utf8-packaging.patch -text
+ci/reconstruct-source.ps1 text eol=lf
+ci/apply-audited-fixes.ps1 text eol=lf
+ci/architecture-invariants.ps1 text eol=lf
+ci/final-release-audit.ps1 text eol=lf
+ci/RELEASE_STATE.txt text eol=lf
+.github/workflows/ets2-truck-visual-audit-build.yml text eol=lf
 ci/work/ETS2-Truck-Visual-Identifier-v2/src/gui/windows_platform.cpp -text

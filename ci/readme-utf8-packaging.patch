@@ -1,6 +1,6 @@
 --- a/tools/build-windows.ps1
 +++ b/tools/build-windows.ps1
-@@ -20,24 +20,34 @@
+@@ -20,24 +20,36 @@
  Copy-Item (Join-Path $Root 'THIRD_PARTY_NOTICES.md') $Pkg
  $PkgExe=Join-Path $Pkg 'ETS2TruckVisualIdentifier.exe'
  & $PkgExe '--package-self-test';if($LASTEXITCODE-ne 0){throw "Install/Uninstall package self-test failed: $LASTEXITCODE"}
@@ -22,34 +22,93 @@
 -Se Cabine/Cor/Pintura ficarem Desconhecido, envie a screenshot e:
 -Documents\Euro Truck Simulator 2\TruckVisualIdentity.log
 -'@|Set-Content -Encoding UTF8 (Join-Path $Pkg 'README.txt')
-+$cCed=[char]0x00E7;$aTilde=[char]0x00E3;$ATilde=[char]0x00C3;$eAcute=[char]0x00E9;$emdash=[char]0x2014
++$lowerATilde=[char]0x00E3;$cCed=[char]0x00E7;$oAcute=[char]0x00F3
 +$readme=@(
-+  '1. Extraia o ZIP.',
-+  '2. Abra ETS2TruckVisualIdentifier.exe.',
-+  '3. Clique INSTALAR.',
-+  '4. Clique ABRIR ETS2.',
-+  ('5. Entre no save e aguarde a identifica'+$cCed+$aTilde+'o.'),
-+  '',
-+  ('TESTE A '+$emdash+' confira o caminh'+$aTilde+'o atual: CABINE, COR, PINTURA e RGB.'),
-+  ('TESTE B '+$emdash+' troque a CABINE e confira se o valor muda.'),
-+  ('TESTE C '+$emdash+' troque a COR/custom RGB e confira valor + RGB/HEX.'),
-+  ('TESTE D '+$emdash+' troque para outro PAINT JOB/skin e confira tipo/nome.'),
-+  ('TESTE E '+$emdash+' troque de CAMINH'+$ATilde+'O e confira se dados antigos n'+$aTilde+'o permanecem.'),
-+  ('TESTE F '+$emdash+' feche o ETS2, clique DESINSTALAR e confirme N'+$ATilde+'O INSTALADO.'),
-+  '',
-+  ('Confira tamb'+$eAcute+'m EIXOS, Marca e Modelo.'),
-+  'Se Cabine/Cor/Pintura ficarem Desconhecido, envie a screenshot e:',
++  '1. Extraia o arquivo.',
++  '2. Execute ETS2TruckVisualIdentifier.exe.',
++  '3. Clique em INSTALAR.',
++  '4. Clique em ABRIR ETS2.',
++  ('5. Entre em um save e aguarde a identifica'+$cCed+$lowerATilde+'o.'),
++  '6. Confira Cabine, Cor, Pintura/RGB e Eixos.',
++  ('7. Troque cabine/cor/pintura/caminh'+$lowerATilde+'o para validar a atualiza'+$cCed+$lowerATilde+'o.'),
++  '8. Clique em DESINSTALAR para remover o plugin.',
++  ('9. Em caso de falha, envie a captura de tela e o log de diagn'+$oAcute+'stico:'),
 +  'Documents\Euro Truck Simulator 2\TruckVisualIdentity.log'
 +)
 +$readmePath=Join-Path $Pkg 'README.txt'
-+$utf8NoBom=New-Object System.Text.UTF8Encoding($false)
++$utf8NoBom=[Text.UTF8Encoding]::new($false)
 +[IO.File]::WriteAllText($readmePath,($readme -join "`r`n")+"`r`n",$utf8NoBom)
-+$readmeCheck=[IO.File]::ReadAllText($readmePath,[Text.Encoding]::UTF8)
++$strictUtf8=[Text.UTF8Encoding]::new($false,$true)
++try{$readmeCheck=$strictUtf8.GetString([IO.File]::ReadAllBytes($readmePath))}catch{throw "README is not strict UTF-8: $($_.Exception.Message)"}
 +foreach($marker in @(
-+  ('identifica'+$cCed+$aTilde+'o'),('caminh'+$aTilde+'o'),('N'+$ATilde+'O INSTALADO'),('tamb'+$eAcute+'m'),
-+  'TESTE A','TESTE B','TESTE C','TESTE D','TESTE E','TESTE F','TruckVisualIdentity.log'
++  ('identifica'+$cCed+$lowerATilde+'o'),('caminh'+$lowerATilde+'o'),('atualiza'+$cCed+$lowerATilde+'o'),('diagn'+$oAcute+'stico'),'TruckVisualIdentity.log'
 +)){if(-not$readmeCheck.Contains($marker)){throw "README UTF-8 marker missing: $marker"}}
-+foreach($bad in @([string][char]0xFFFD,('identifica'+[char]0x00C3+[char]0x00A7),('caminh'+[char]0x00C3+[char]0x00A3))){if($readmeCheck.Contains($bad)){throw 'README mojibake detected.'}}
++$knownBad=@(
++  ([string][char]0xFFFD),
++  ('caminh'+[char]0x00C3+'o'),
++  ('identifica'+[char]0x00E7+[char]0x00C3+'o'),
++  ('caminh'+[char]0x00C3+[char]0x00A3+'o'),
++  ('identifica'+[char]0x00C3+[char]0x00A7+[char]0x00C3+[char]0x00A3+'o'),
++  ([string][char]0x00C3+[char]0x0192)
++)
++foreach($bad in $knownBad){if($readmeCheck.Contains($bad)){throw "README mojibake detected: $bad"}}
  $hashLines=Get-ChildItem $Pkg -Recurse -File|ForEach-Object{$rel=$_.FullName.Substring($Pkg.Length).TrimStart([char]92).Replace('\\','/');"$((Get-FileHash $_.FullName -Algorithm SHA256).Hash.ToLowerInvariant())  $rel"}
  $hashLines|Set-Content -Encoding ASCII (Join-Path $Pkg 'SHA256SUMS.txt')
  $Report=Join-Path $Dist 'BUILD_REPORT.txt'
+@@ -52,4 +64,56 @@
+ );foreach($p in $required){if(!(Test-Path $p)){throw "Package missing runtime file: $p"}}
+ $forbidden=Get-ChildItem $Pkg -Recurse -File|Where-Object{$_.Extension -in @('.obj','.lib','.pdb','.ilk','.exp','.cpp','.h','.hpp','.ps1','.vcxproj','.sln')};if($forbidden){throw "Forbidden build artifact in package: $($forbidden.FullName -join ', ')"}
+ $zip=Join-Path $Dist 'ETS2_Truck_Visual_Identifier_CabinPaint_TEST_x64.zip';Compress-Archive -Path $Pkg -DestinationPath $zip -CompressionLevel Optimal
++
++# Audit the exact ZIP bytes that will be delivered, not only the staging directory.
++$AuditRoot=Join-Path $Dist 'post-package-audit';if(Test-Path $AuditRoot){Remove-Item $AuditRoot -Recurse -Force};New-Item -ItemType Directory -Force $AuditRoot|Out-Null
++Expand-Archive -LiteralPath $zip -DestinationPath $AuditRoot -Force
++$ZipPkg=Join-Path $AuditRoot (Split-Path $Pkg -Leaf);if(!(Test-Path $ZipPkg)){throw "Post-package root missing: $ZipPkg"}
++$allowedZip=@('ETS2TruckVisualIdentifier.exe','README.txt','SHA256SUMS.txt','THIRD_PARTY_NOTICES.md','Runtime/ets2_truck_visual_identifier.dll','Runtime/scs_tool.exe')
++$actualZip=Get-ChildItem $ZipPkg -Recurse -File|ForEach-Object{$_.FullName.Substring($ZipPkg.Length).TrimStart([char]92).Replace('\','/')}
++foreach($a in $allowedZip){if($actualZip-notcontains$a){throw "Post-package missing file: $a"}}
++foreach($a in $actualZip){if($allowedZip-notcontains$a){throw "Post-package unexpected file: $a"}}
++
++# Verify the shipped SHA256SUMS against files extracted from the exact ZIP.
++$sumPath=Join-Path $ZipPkg 'SHA256SUMS.txt';$sumLines=@(Get-Content $sumPath -Encoding ASCII|Where-Object{$_ -ne ''});$seen=@{}
++foreach($line in $sumLines){
++  if($line-notmatch'^([0-9a-f]{64})  (.+)$'){throw "Malformed SHA256SUMS line: $line"}
++  $expected=$matches[1];$rel=$matches[2].Replace('/','\');if($seen.ContainsKey($rel)){throw "Duplicate SHA256SUMS entry: $rel"};$seen[$rel]=$true
++  $file=Join-Path $ZipPkg $rel;if(!(Test-Path $file)){throw "SHA256SUMS target missing: $rel"}
++  $actualHash=(Get-FileHash $file -Algorithm SHA256).Hash.ToLowerInvariant();if($actualHash-ne$expected){throw "SHA256SUMS mismatch for $rel expected=$expected actual=$actualHash"}
++}
++$expectedHashed=@('ETS2TruckVisualIdentifier.exe','README.txt','THIRD_PARTY_NOTICES.md','Runtime\ets2_truck_visual_identifier.dll','Runtime\scs_tool.exe')
++if($seen.Count-ne$expectedHashed.Count){throw "Unexpected SHA256SUMS entry count: $($seen.Count)"};foreach($rel in $expectedHashed){if(-not$seen.ContainsKey($rel)){throw "SHA256SUMS missing entry: $rel"}}
++
++# Strict UTF-8 + mojibake audit of every user-visible text file in the delivered ZIP.
++$strictUtf8=[Text.UTF8Encoding]::new($false,$true)
++$textFiles=@('README.txt','SHA256SUMS.txt','THIRD_PARTY_NOTICES.md')
++$decoded=@{}
++foreach($rel in $textFiles){
++  $path=Join-Path $ZipPkg $rel
++  try{$text=$strictUtf8.GetString([IO.File]::ReadAllBytes($path))}catch{throw "Post-package text is not strict UTF-8: $rel :: $($_.Exception.Message)"}
++  $decoded[$rel]=$text
++  $genericBad=@(
++    ([string][char]0xFFFD),
++    ([string][char]0x00C3+[char]0x00A7),([string][char]0x00C3+[char]0x00A3),([string][char]0x00C3+[char]0x00A9),
++    ([string][char]0x00C3+[char]0x00B3),([string][char]0x00C3+[char]0x00BA),([string][char]0x00C3+[char]0x00AA),
++    ([string][char]0x00C3+[char]0x00B4),([string][char]0x00C3+[char]0x0192)
++  )
++  foreach($bad in $genericBad){if($text.Contains($bad)){throw "Mojibake pattern detected in ${rel}: $bad"}}
++}
++$finalReadme=$decoded['README.txt']
++$mustReadme=@(('identifica'+$cCed+$lowerATilde+'o'),('caminh'+$lowerATilde+'o'),('atualiza'+$cCed+$lowerATilde+'o'),('diagn'+$oAcute+'stico'),'TruckVisualIdentity.log')
++foreach($marker in $mustReadme){if(-not$finalReadme.Contains($marker)){throw "Post-package README marker missing: $marker"}}
++$readmeBad=@(('caminh'+[char]0x00C3+'o'),('identifica'+[char]0x00E7+[char]0x00C3+'o'))
++foreach($bad in $readmeBad){if($finalReadme.Contains($bad)){throw "Post-package README mojibake detected: $bad"}}
++
++$finalZipSha=(Get-FileHash $zip -Algorithm SHA256).Hash.ToLowerInvariant()
++Add-Content -Encoding ASCII $Report 'POST-PACKAGE README UTF-8 AUDIT: PASS'
++Add-Content -Encoding ASCII $Report 'POST-PACKAGE FILE AUDIT: PASS'
++Add-Content -Encoding ASCII $Report "FINAL_ZIP_NAME=$(Split-Path $zip -Leaf)"
++Add-Content -Encoding ASCII $Report "FINAL_ZIP_SHA256=$finalZipSha"
++if($env:SOURCE_COMMIT){Add-Content -Encoding ASCII $Report "SOURCE_COMMIT=$env:SOURCE_COMMIT"}
++if($env:SOURCE_SHA256){Add-Content -Encoding ASCII $Report "SOURCE_SNAPSHOT_SHA256=$env:SOURCE_SHA256"}
++if($env:GITHUB_RUN_ID){Add-Content -Encoding ASCII $Report "WORKFLOW_RUN_ID=$env:GITHUB_RUN_ID"}
++Write-Host 'POST-PACKAGE README UTF-8 AUDIT: PASS';Write-Host 'POST-PACKAGE FILE AUDIT: PASS';Write-Host "FINAL_ZIP_SHA256=$finalZipSha"
+ Write-Host 'WINDOWS BUILD: PASS';Write-Host 'TEST ZIP: GENERATED';Write-Host $zip
