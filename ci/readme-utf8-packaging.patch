@@ -1,0 +1,55 @@
+--- a/tools/build-windows.ps1
++++ b/tools/build-windows.ps1
+@@ -20,24 +20,34 @@
+ Copy-Item (Join-Path $Root 'THIRD_PARTY_NOTICES.md') $Pkg
+ $PkgExe=Join-Path $Pkg 'ETS2TruckVisualIdentifier.exe'
+ & $PkgExe '--package-self-test';if($LASTEXITCODE-ne 0){throw "Install/Uninstall package self-test failed: $LASTEXITCODE"}
+-@'
+-1. Extraia o ZIP.
+-2. Abra ETS2TruckVisualIdentifier.exe.
+-3. Clique INSTALAR.
+-4. Clique ABRIR ETS2.
+-5. Entre no save e aguarde a identificação.
+-
+-TESTE A — confira o caminhão atual: CABINE, COR, PINTURA e RGB.
+-TESTE B — troque a CABINE e confira se o valor muda.
+-TESTE C — troque a COR/custom RGB e confira valor + RGB/HEX.
+-TESTE D — troque para outro PAINT JOB/skin e confira tipo/nome.
+-TESTE E — troque de CAMINHÃO e confira se dados antigos não permanecem.
+-TESTE F — feche o ETS2, clique DESINSTALAR e confirme NÃO INSTALADO.
+-
+-Confira também EIXOS, Marca e Modelo.
+-Se Cabine/Cor/Pintura ficarem Desconhecido, envie a screenshot e:
+-Documents\Euro Truck Simulator 2\TruckVisualIdentity.log
+-'@|Set-Content -Encoding UTF8 (Join-Path $Pkg 'README.txt')
++$cCed=[char]0x00E7;$aTilde=[char]0x00E3;$ATilde=[char]0x00C3;$eAcute=[char]0x00E9;$emdash=[char]0x2014
++$readme=@(
++  '1. Extraia o ZIP.',
++  '2. Abra ETS2TruckVisualIdentifier.exe.',
++  '3. Clique INSTALAR.',
++  '4. Clique ABRIR ETS2.',
++  ('5. Entre no save e aguarde a identifica'+$cCed+$aTilde+'o.'),
++  '',
++  ('TESTE A '+$emdash+' confira o caminh'+$aTilde+'o atual: CABINE, COR, PINTURA e RGB.'),
++  ('TESTE B '+$emdash+' troque a CABINE e confira se o valor muda.'),
++  ('TESTE C '+$emdash+' troque a COR/custom RGB e confira valor + RGB/HEX.'),
++  ('TESTE D '+$emdash+' troque para outro PAINT JOB/skin e confira tipo/nome.'),
++  ('TESTE E '+$emdash+' troque de CAMINH'+$ATilde+'O e confira se dados antigos n'+$aTilde+'o permanecem.'),
++  ('TESTE F '+$emdash+' feche o ETS2, clique DESINSTALAR e confirme N'+$ATilde+'O INSTALADO.'),
++  '',
++  ('Confira tamb'+$eAcute+'m EIXOS, Marca e Modelo.'),
++  'Se Cabine/Cor/Pintura ficarem Desconhecido, envie a screenshot e:',
++  'Documents\Euro Truck Simulator 2\TruckVisualIdentity.log'
++)
++$readmePath=Join-Path $Pkg 'README.txt'
++$utf8NoBom=New-Object System.Text.UTF8Encoding($false)
++[IO.File]::WriteAllText($readmePath,($readme -join "`r`n")+"`r`n",$utf8NoBom)
++$readmeCheck=[IO.File]::ReadAllText($readmePath,[Text.Encoding]::UTF8)
++foreach($marker in @(
++  ('identifica'+$cCed+$aTilde+'o'),('caminh'+$aTilde+'o'),('N'+$ATilde+'O INSTALADO'),('tamb'+$eAcute+'m'),
++  'TESTE A','TESTE B','TESTE C','TESTE D','TESTE E','TESTE F','TruckVisualIdentity.log'
++)){if(-not$readmeCheck.Contains($marker)){throw "README UTF-8 marker missing: $marker"}}
++foreach($bad in @([string][char]0xFFFD,('identifica'+[char]0x00C3+[char]0x00A7),('caminh'+[char]0x00C3+[char]0x00A3))){if($readmeCheck.Contains($bad)){throw 'README mojibake detected.'}}
+ $hashLines=Get-ChildItem $Pkg -Recurse -File|ForEach-Object{$rel=$_.FullName.Substring($Pkg.Length).TrimStart([char]92).Replace('\\','/');"$((Get-FileHash $_.FullName -Algorithm SHA256).Hash.ToLowerInvariant())  $rel"}
+ $hashLines|Set-Content -Encoding ASCII (Join-Path $Pkg 'SHA256SUMS.txt')
+ $Report=Join-Path $Dist 'BUILD_REPORT.txt'
