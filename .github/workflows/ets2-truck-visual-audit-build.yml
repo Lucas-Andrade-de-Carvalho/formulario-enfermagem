@@ -73,7 +73,7 @@ jobs:
           Add-Content $env:GITHUB_ENV "SOURCE_COMMIT=$env:GITHUB_SHA"
           @("SOURCE_ARCHIVE_SHA256=$actualFinal","BRANCH=$env:GITHUB_REF_NAME","COMMIT=$env:GITHUB_SHA")|Set-Content -Encoding ASCII 'ci\SOURCE_PROVENANCE.txt'
 
-      - name: Apply audited MSVC portability fix
+      - name: Apply audited MSVC portability and Windows VFS-test fixes
         shell: powershell
         run: |
           $ErrorActionPreference='Stop'
@@ -101,21 +101,48 @@ jobs:
           $normalizedSha=([BitConverter]::ToString($normDigest)).Replace('-','').ToLowerInvariant()
           $expectedNormalized='4defdba6b1c39cdcabac769bf0c7c3046886eaab2878889cbd654cd31f49da93'
           if($normalizedSha-ne$expectedNormalized){throw "Patched normalized-LF SHA mismatch expected=$expectedNormalized actual=$normalizedSha"}
-          $identity="BASE=$env:SOURCE_SHA256`nPATCH=$patchSha`nNORMALIZED_RESULT=$normalizedSha`n"
-          $sha=[Security.Cryptography.SHA256]::Create()
-          try{$digest=$sha.ComputeHash([Text.Encoding]::ASCII.GetBytes($identity))}finally{$sha.Dispose()}
+
+          $vfsPatch=(Resolve-Path 'ci\windows-vfs-test-createprocess.patch').Path
+          $vfsPatchSha=(Get-FileHash $vfsPatch -Algorithm SHA256).Hash.ToLowerInvariant()
+          $expectedVfsPatch='cc35f71ebf5992ab22b8bb78d3ad88e6d0a7ee9fe68f1b36af32b5f8941df58a'
+          if($vfsPatchSha-ne$expectedVfsPatch){throw "VFS test patch SHA mismatch expected=$expectedVfsPatch actual=$vfsPatchSha"}
+          $vfsFile=Join-Path $root 'src\gui\windows_integration_tests.cpp'
+          $vfsBefore=(Get-FileHash $vfsFile -Algorithm SHA256).Hash.ToLowerInvariant()
+          $expectedVfsBefore='3193b50ce9dbbb62280101243dfe12d0fb7e60ec29a8de01f6f05cdd1b64a578'
+          if($vfsBefore-ne$expectedVfsBefore){throw "Pre-patch windows_integration_tests.cpp SHA mismatch expected=$expectedVfsBefore actual=$vfsBefore"}
+          & git apply --check --whitespace=nowarn --directory=$subdir $vfsPatch
+          if($LASTEXITCODE-ne0){throw "VFS test git apply --check failed: $LASTEXITCODE"}
+          & git apply --whitespace=nowarn --directory=$subdir $vfsPatch
+          if($LASTEXITCODE-ne0){throw "VFS test git apply failed: $LASTEXITCODE"}
+          $vfsResult=(Get-FileHash $vfsFile -Algorithm SHA256).Hash.ToLowerInvariant()
+          $acceptedVfsRaw=@('805a3b4b2f14b087db3a5ca5fe534b19b8f5ef4bc889b05aa41fb74f786368e6','98b6131f00fdf8b56d8b0614eadc11cfe10c04c15da3a621a21d6e725ee99553')
+          if($acceptedVfsRaw-notcontains$vfsResult){throw "VFS test patched result SHA is not an audited LF/CRLF representation: $vfsResult"}
+          [byte[]]$vb=[IO.File]::ReadAllBytes($vfsFile)
+          $vms=New-Object IO.MemoryStream
+          try{for($i=0;$i-lt$vb.Length;$i++){if($vb[$i]-eq13-and$i+1-lt$vb.Length-and$vb[$i+1]-eq10){continue};$vms.WriteByte($vb[$i])};$vnorm=$vms.ToArray()}finally{$vms.Dispose()}
+          $vsha=[Security.Cryptography.SHA256]::Create();try{$vdigest=$vsha.ComputeHash($vnorm)}finally{$vsha.Dispose()}
+          $vfsNormalized=([BitConverter]::ToString($vdigest)).Replace('-','').ToLowerInvariant()
+          $expectedVfsNormalized='805a3b4b2f14b087db3a5ca5fe534b19b8f5ef4bc889b05aa41fb74f786368e6'
+          if($vfsNormalized-ne$expectedVfsNormalized){throw "VFS test normalized-LF SHA mismatch expected=$expectedVfsNormalized actual=$vfsNormalized"}
+
+          $identity="BASE=$env:SOURCE_SHA256`nPATCH1=$patchSha`nNORMALIZED_RESULT1=$normalizedSha`nPATCH2=$vfsPatchSha`nNORMALIZED_RESULT2=$vfsNormalized`n"
+          $sha=[Security.Cryptography.SHA256]::Create();try{$digest=$sha.ComputeHash([Text.Encoding]::ASCII.GetBytes($identity))}finally{$sha.Dispose()}
           $effective=([BitConverter]::ToString($digest)).Replace('-','').ToLowerInvariant()
-          $expectedEffective='e1292837c5fd0c7c90d0b99e41ff1b32f3981a56445239bb79457bd05327f1fe'
+          $expectedEffective='ad07b97c78281227ae0d20ee542fb441ed383528d841c8e849ed96d35816d9f5'
           if($effective-ne$expectedEffective){throw "Effective source identity mismatch expected=$expectedEffective actual=$effective"}
           Add-Content $env:GITHUB_ENV "BUILD_FIX_PATCH_SHA256=$patchSha"
+          Add-Content $env:GITHUB_ENV "WINDOWS_VFS_TEST_PATCH_SHA256=$vfsPatchSha"
           Add-Content $env:GITHUB_ENV "EFFECTIVE_SOURCE_ID=$effective"
           Add-Content -Encoding ASCII 'ci\SOURCE_PROVENANCE.txt' "BUILD_FIX_PATCH_SHA256=$patchSha"
           Add-Content -Encoding ASCII 'ci\SOURCE_PROVENANCE.txt' "RESULT_WINDOWS_PLATFORM_SHA256=$resultSha"
           Add-Content -Encoding ASCII 'ci\SOURCE_PROVENANCE.txt' "RESULT_WINDOWS_PLATFORM_NORMALIZED_LF_SHA256=$normalizedSha"
+          Add-Content -Encoding ASCII 'ci\SOURCE_PROVENANCE.txt' "WINDOWS_VFS_TEST_PATCH_SHA256=$vfsPatchSha"
+          Add-Content -Encoding ASCII 'ci\SOURCE_PROVENANCE.txt' "RESULT_WINDOWS_VFS_TEST_NORMALIZED_LF_SHA256=$vfsNormalized"
           Add-Content -Encoding ASCII 'ci\SOURCE_PROVENANCE.txt' "EFFECTIVE_SOURCE_ID=$effective"
           Write-Host "BUILD_FIX_PATCH_SHA256=$patchSha"
-          Write-Host "RESULT_WINDOWS_PLATFORM_SHA256=$resultSha"
+          Write-Host "WINDOWS_VFS_TEST_PATCH_SHA256=$vfsPatchSha"
           Write-Host "RESULT_WINDOWS_PLATFORM_NORMALIZED_LF_SHA256=$normalizedSha"
+          Write-Host "RESULT_WINDOWS_VFS_TEST_NORMALIZED_LF_SHA256=$vfsNormalized"
           Write-Host "EFFECTIVE_SOURCE_ID=$effective"
 
       - name: Architecture and diagnostics invariants
@@ -172,7 +199,7 @@ jobs:
           $allowed=@('ETS2TruckVisualIdentifier.exe','README.txt','SHA256SUMS.txt','THIRD_PARTY_NOTICES.md','Runtime/ets2_truck_visual_identifier.dll','Runtime/scs_tool.exe');$actual=Get-ChildItem $pkg -Recurse -File|ForEach-Object{$_.FullName.Substring($pkg.Length).TrimStart([char]92).Replace('\','/')};foreach($a in $allowed){if($actual-notcontains$a){throw "Package missing: $a"}};foreach($a in $actual){if($allowed-notcontains$a){throw "Unexpected package file: $a"}}
           $forbidden=Get-ChildItem $pkg -Recurse -File|Where-Object{$_.Extension-in@('.obj','.pdb','.lib','.exp','.ilk','.cpp','.h','.hpp','.ps1','.vcxproj','.sln')};if($forbidden){throw "Forbidden package artifact: $($forbidden.FullName -join ', ')"}
           $readme=Get-Content (Join-Path $pkg 'README.txt') -Raw -Encoding UTF8;foreach($m in @('TESTE A','TESTE B','TESTE C','TESTE D','TESTE E','TESTE F','TruckVisualIdentity.log')){if(-not$readme.Contains($m)){throw "README marker missing: $m"}}
-          Add-Content -Encoding ASCII $report "SOURCE_ARCHIVE_SHA256=$env:SOURCE_SHA256";Add-Content -Encoding ASCII $report "BUILD_FIX_PATCH_SHA256=$env:BUILD_FIX_PATCH_SHA256";Add-Content -Encoding ASCII $report "EFFECTIVE_SOURCE_ID=$env:EFFECTIVE_SOURCE_ID";Add-Content -Encoding ASCII $report "BRANCH=$env:SOURCE_BRANCH";Add-Content -Encoding ASCII $report "COMMIT=$env:SOURCE_COMMIT";Add-Content -Encoding ASCII $report 'WINDOWS HASHFS/VFS TEST: PASS (ctest)';Add-Content -Encoding ASCII $report 'CABIN/PAINT WINDOWS TESTS: PASS (ctest)';Add-Content -Encoding ASCII $report 'UNINSTALL WINDOWS TEST: PASS';Add-Content -Encoding ASCII $report 'FINAL PE AUDIT: PASS';Add-Content -Encoding ASCII $report 'WINDOWS GUI SMOKE TEST: PASS';Add-Content -Encoding ASCII $report 'PACKAGE AUDIT: PASS'
+          Add-Content -Encoding ASCII $report "SOURCE_ARCHIVE_SHA256=$env:SOURCE_SHA256";Add-Content -Encoding ASCII $report "BUILD_FIX_PATCH_SHA256=$env:BUILD_FIX_PATCH_SHA256";Add-Content -Encoding ASCII $report "WINDOWS_VFS_TEST_PATCH_SHA256=$env:WINDOWS_VFS_TEST_PATCH_SHA256";Add-Content -Encoding ASCII $report "EFFECTIVE_SOURCE_ID=$env:EFFECTIVE_SOURCE_ID";Add-Content -Encoding ASCII $report "BRANCH=$env:SOURCE_BRANCH";Add-Content -Encoding ASCII $report "COMMIT=$env:SOURCE_COMMIT";Add-Content -Encoding ASCII $report 'WINDOWS HASHFS/VFS TEST: PASS (ctest)';Add-Content -Encoding ASCII $report 'CABIN/PAINT WINDOWS TESTS: PASS (ctest)';Add-Content -Encoding ASCII $report 'UNINSTALL WINDOWS TEST: PASS';Add-Content -Encoding ASCII $report 'FINAL PE AUDIT: PASS';Add-Content -Encoding ASCII $report 'WINDOWS GUI SMOKE TEST: PASS';Add-Content -Encoding ASCII $report 'PACKAGE AUDIT: PASS'
           Copy-Item 'ci\SOURCE_PROVENANCE.txt' (Join-Path $dist 'SOURCE_PROVENANCE.txt') -Force
 
       - name: Upload audited CabinPaint package
