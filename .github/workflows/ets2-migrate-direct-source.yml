@@ -1,0 +1,86 @@
+name: ETS2 migrate audited source to direct Git branch
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - 'ci/ets2-truck-visual-audit-build'
+    paths:
+      - 'ci/final-direct-source.patch.gz.b64'
+      - '.github/workflows/ets2-migrate-direct-source.yml'
+
+permissions:
+  contents: write
+
+jobs:
+  migrate:
+    runs-on: windows-2022
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      - name: Reconstruct the last audited baseline
+        shell: powershell
+        run: .\ci\reconstruct-source.ps1
+
+      - name: Apply final deterministic repair and verify source fingerprint
+        shell: powershell
+        run: |
+          $ErrorActionPreference='Stop'
+          $source=(Resolve-Path 'ci\work\ETS2-Truck-Visual-Identifier-v2').Path
+          $encoded=[IO.File]::ReadAllText((Resolve-Path 'ci\final-direct-source.patch.gz.b64'),[Text.Encoding]::ASCII).Trim()
+          [byte[]]$gz=[Convert]::FromBase64String($encoded)
+          $input=[IO.MemoryStream]::new($gz,$false)
+          $gzip=[IO.Compression.GZipStream]::new($input,[IO.Compression.CompressionMode]::Decompress)
+          $patch=Join-Path $env:RUNNER_TEMP 'final-direct-source.patch'
+          $output=[IO.File]::Create($patch)
+          try{$gzip.CopyTo($output)}finally{$output.Dispose();$gzip.Dispose();$input.Dispose()}
+          $patchSha=(Get-FileHash $patch -Algorithm SHA256).Hash.ToLowerInvariant()
+          if($patchSha-ne'9755180325f4ee1fe05deea67fe412fbc0f09f8b8cd509b7d36d64e39e4944ac'){throw "Final source patch SHA mismatch: $patchSha"}
+
+          & git -C $source init; if($LASTEXITCODE-ne0){throw 'temp git init failed'}
+          & git -C $source config user.name 'ETS2 Identifier CI'; & git -C $source config user.email 'actions@users.noreply.github.com'
+          & git -C $source add -A; & git -C $source commit -m baseline | Out-Null
+          & git -C $source apply --check $patch; if($LASTEXITCODE-ne0){throw 'Final source patch check failed'}
+          & git -C $source apply $patch; if($LASTEXITCODE-ne0){throw 'Final source patch apply failed'}
+          & git -C $source add -A; & git -C $source commit -m final-repair | Out-Null
+
+          Push-Location $source
+          try {
+            .\tools\source-fingerprint.ps1
+            $files=@(& git ls-files | Where-Object { $_ -and $_ -ne 'ci/RELEASE_STATE.txt' } | Sort-Object)
+            $inc=[Security.Cryptography.IncrementalHash]::CreateHash([Security.Cryptography.HashAlgorithmName]::SHA256)
+            try {
+              foreach($rel in $files){$inc.AppendData([Text.Encoding]::UTF8.GetBytes($rel.Replace('\','/')+"`n"));$inc.AppendData([IO.File]::ReadAllBytes((Join-Path $source $rel)));$inc.AppendData([byte[]]@(0))}
+              $digest=$inc.GetHashAndReset()
+            } finally {$inc.Dispose()}
+            $fingerprint=([BitConverter]::ToString($digest)).Replace('-','').ToLowerInvariant()
+          } finally {Pop-Location}
+          if($fingerprint-ne'596a331b82e09795a842c6b5b7e699978b2668f1a122033818e5c221afba12ec'){throw "Final direct source fingerprint mismatch: $fingerprint"}
+          Write-Host "FINAL_DIRECT_SOURCE_FINGERPRINT=$fingerprint"
+
+          $export=Join-Path $env:RUNNER_TEMP 'ets2-final-direct-source'
+          if(Test-Path $export){Remove-Item $export -Recurse -Force};New-Item -ItemType Directory -Force $export|Out-Null
+          $rc=(Start-Process robocopy -ArgumentList @($source,$export,'/MIR','/XD','.git','build-win','dist','third_party','/NFL','/NDL','/NJH','/NJS','/NP') -Wait -PassThru).ExitCode
+          if($rc-ge8){throw "robocopy export failed: $rc"}
+          Add-Content $env:GITHUB_ENV "FINAL_SOURCE_EXPORT=$export"
+
+      - name: Publish clean direct-source branch
+        shell: powershell
+        run: |
+          $ErrorActionPreference='Stop'
+          $export=$env:FINAL_SOURCE_EXPORT
+          git config user.name 'ETS2 Identifier CI'
+          git config user.email 'actions@users.noreply.github.com'
+          git checkout --orphan fix/cabin-paint-final
+          git rm -rf . 2>$null | Out-Null
+          Get-ChildItem -Force | Where-Object {$_.Name-ne'.git'} | Remove-Item -Recurse -Force
+          $rc=(Start-Process robocopy -ArgumentList @($export,(Get-Location).Path,'/MIR','/NFL','/NDL','/NJH','/NJS','/NP') -Wait -PassThru).ExitCode
+          if($rc-ge8){throw "robocopy import failed: $rc"}
+          git add -A
+          git commit -m 'Final: direct source with real SII save decoder gate'
+          $head=(git rev-parse HEAD).Trim()
+          Write-Host "DIRECT_SOURCE_COMMIT=$head"
+          git push origin HEAD:refs/heads/fix/cabin-paint-final --force
