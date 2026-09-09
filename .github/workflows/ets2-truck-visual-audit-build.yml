@@ -73,7 +73,7 @@ jobs:
           Add-Content $env:GITHUB_ENV "SOURCE_COMMIT=$env:GITHUB_SHA"
           @("SOURCE_ARCHIVE_SHA256=$actualFinal","BRANCH=$env:GITHUB_REF_NAME","COMMIT=$env:GITHUB_SHA")|Set-Content -Encoding ASCII 'ci\SOURCE_PROVENANCE.txt'
 
-      - name: Apply audited MSVC portability and Windows VFS-test fixes
+      - name: Apply audited build and test fixes
         shell: powershell
         run: |
           $ErrorActionPreference='Stop'
@@ -125,22 +125,49 @@ jobs:
           $expectedVfsNormalized='805a3b4b2f14b087db3a5ca5fe534b19b8f5ef4bc889b05aa41fb74f786368e6'
           if($vfsNormalized-ne$expectedVfsNormalized){throw "VFS test normalized-LF SHA mismatch expected=$expectedVfsNormalized actual=$vfsNormalized"}
 
-          $identity="BASE=$env:SOURCE_SHA256`nPATCH1=$patchSha`nNORMALIZED_RESULT1=$normalizedSha`nPATCH2=$vfsPatchSha`nNORMALIZED_RESULT2=$vfsNormalized`n"
+          $readmePatch=(Resolve-Path 'ci\readme-utf8-packaging.patch').Path
+          $readmePatchSha=(Get-FileHash $readmePatch -Algorithm SHA256).Hash.ToLowerInvariant()
+          $expectedReadmePatch='f50221045f65d69b9d7b0374b3aafa352ab02c4fd02fa7c53406f884c4431cb7'
+          if($readmePatchSha-ne$expectedReadmePatch){throw "README packaging patch SHA mismatch expected=$expectedReadmePatch actual=$readmePatchSha"}
+          $buildScript=Join-Path $root 'tools\build-windows.ps1'
+          $buildBefore=(Get-FileHash $buildScript -Algorithm SHA256).Hash.ToLowerInvariant()
+          $expectedBuildBefore='12e506e17fc3eb49a7e6180b292fee3e4e2e0386e5f038aaaf2d11041883767e'
+          if($buildBefore-ne$expectedBuildBefore){throw "Pre-patch build-windows.ps1 SHA mismatch expected=$expectedBuildBefore actual=$buildBefore"}
+          & git apply --check --whitespace=nowarn --directory=$subdir $readmePatch
+          if($LASTEXITCODE-ne0){throw "README packaging git apply --check failed: $LASTEXITCODE"}
+          & git apply --whitespace=nowarn --directory=$subdir $readmePatch
+          if($LASTEXITCODE-ne0){throw "README packaging git apply failed: $LASTEXITCODE"}
+          $buildResult=(Get-FileHash $buildScript -Algorithm SHA256).Hash.ToLowerInvariant()
+          $acceptedBuildRaw=@('03ccdff49325004d24a4a561eaa7e212f403e65d738830f6f1750bcdf6228ec6','24ebb150b1522949ff00c68fb4f8a52df08536ca9c681e44e51c0dbe10c52803')
+          if($acceptedBuildRaw-notcontains$buildResult){throw "README packaging patched result SHA is not an audited LF/CRLF representation: $buildResult"}
+          [byte[]]$bb=[IO.File]::ReadAllBytes($buildScript)
+          $bms=New-Object IO.MemoryStream
+          try{for($i=0;$i-lt$bb.Length;$i++){if($bb[$i]-eq13-and$i+1-lt$bb.Length-and$bb[$i+1]-eq10){continue};$bms.WriteByte($bb[$i])};$bnorm=$bms.ToArray()}finally{$bms.Dispose()}
+          $bsha=[Security.Cryptography.SHA256]::Create();try{$bdigest=$bsha.ComputeHash($bnorm)}finally{$bsha.Dispose()}
+          $buildNormalized=([BitConverter]::ToString($bdigest)).Replace('-','').ToLowerInvariant()
+          $expectedBuildNormalized='03ccdff49325004d24a4a561eaa7e212f403e65d738830f6f1750bcdf6228ec6'
+          if($buildNormalized-ne$expectedBuildNormalized){throw "README packaging normalized-LF SHA mismatch expected=$expectedBuildNormalized actual=$buildNormalized"}
+
+          $identity="BASE=$env:SOURCE_SHA256`nPATCH1=$patchSha`nNORMALIZED_RESULT1=$normalizedSha`nPATCH2=$vfsPatchSha`nNORMALIZED_RESULT2=$vfsNormalized`nPATCH3=$readmePatchSha`nNORMALIZED_RESULT3=$buildNormalized`n"
           $sha=[Security.Cryptography.SHA256]::Create();try{$digest=$sha.ComputeHash([Text.Encoding]::ASCII.GetBytes($identity))}finally{$sha.Dispose()}
           $effective=([BitConverter]::ToString($digest)).Replace('-','').ToLowerInvariant()
-          $expectedEffective='ad07b97c78281227ae0d20ee542fb441ed383528d841c8e849ed96d35816d9f5'
+          $expectedEffective='475093b14c6dd1c6163c256429116349e9f638ffd07b3013e1542fc745d8b003'
           if($effective-ne$expectedEffective){throw "Effective source identity mismatch expected=$expectedEffective actual=$effective"}
           Add-Content $env:GITHUB_ENV "BUILD_FIX_PATCH_SHA256=$patchSha"
           Add-Content $env:GITHUB_ENV "WINDOWS_VFS_TEST_PATCH_SHA256=$vfsPatchSha"
+          Add-Content $env:GITHUB_ENV "README_UTF8_PATCH_SHA256=$readmePatchSha"
           Add-Content $env:GITHUB_ENV "EFFECTIVE_SOURCE_ID=$effective"
           Add-Content -Encoding ASCII 'ci\SOURCE_PROVENANCE.txt' "BUILD_FIX_PATCH_SHA256=$patchSha"
           Add-Content -Encoding ASCII 'ci\SOURCE_PROVENANCE.txt' "RESULT_WINDOWS_PLATFORM_SHA256=$resultSha"
           Add-Content -Encoding ASCII 'ci\SOURCE_PROVENANCE.txt' "RESULT_WINDOWS_PLATFORM_NORMALIZED_LF_SHA256=$normalizedSha"
           Add-Content -Encoding ASCII 'ci\SOURCE_PROVENANCE.txt' "WINDOWS_VFS_TEST_PATCH_SHA256=$vfsPatchSha"
           Add-Content -Encoding ASCII 'ci\SOURCE_PROVENANCE.txt' "RESULT_WINDOWS_VFS_TEST_NORMALIZED_LF_SHA256=$vfsNormalized"
+          Add-Content -Encoding ASCII 'ci\SOURCE_PROVENANCE.txt' "README_UTF8_PATCH_SHA256=$readmePatchSha"
+          Add-Content -Encoding ASCII 'ci\SOURCE_PROVENANCE.txt' "RESULT_BUILD_WINDOWS_NORMALIZED_LF_SHA256=$buildNormalized"
           Add-Content -Encoding ASCII 'ci\SOURCE_PROVENANCE.txt' "EFFECTIVE_SOURCE_ID=$effective"
           Write-Host "BUILD_FIX_PATCH_SHA256=$patchSha"
           Write-Host "WINDOWS_VFS_TEST_PATCH_SHA256=$vfsPatchSha"
+          Write-Host "README_UTF8_PATCH_SHA256=$readmePatchSha"
           Write-Host "RESULT_WINDOWS_PLATFORM_NORMALIZED_LF_SHA256=$normalizedSha"
           Write-Host "RESULT_WINDOWS_VFS_TEST_NORMALIZED_LF_SHA256=$vfsNormalized"
           Write-Host "EFFECTIVE_SOURCE_ID=$effective"
@@ -198,8 +225,11 @@ jobs:
           $proc=Start-Process -FilePath $exe -PassThru;try{if(-not$proc.WaitForInputIdle(5000)){throw 'GUI did not reach input-idle.'};Start-Sleep -Milliseconds 1000;$proc.Refresh();if($proc.HasExited){throw "GUI immediate crash: $($proc.ExitCode)"};if($proc.MainWindowTitle-ne$title){throw "Unexpected title: $($proc.MainWindowTitle)"};[UIntPtr]$r=[UIntPtr]::Zero;$ok=[Ets2ViNative]::SendMessageTimeoutW($proc.MainWindowHandle,0,[UIntPtr]::Zero,[IntPtr]::Zero,2,1000,[ref]$r);if($ok-eq[IntPtr]::Zero){throw 'GUI not responsive.'};if(-not[Ets2ViNative]::PostMessageW($proc.MainWindowHandle,0x0010,[UIntPtr]::Zero,[IntPtr]::Zero)){throw 'WM_CLOSE failed.'};if(-not$proc.WaitForExit(5000)){throw 'GUI did not exit cleanly.'};if($proc.ExitCode-ne0){throw "GUI exit=$($proc.ExitCode)"}}finally{if($proc-and-not$proc.HasExited){Stop-Process -Id $proc.Id -Force}}
           $allowed=@('ETS2TruckVisualIdentifier.exe','README.txt','SHA256SUMS.txt','THIRD_PARTY_NOTICES.md','Runtime/ets2_truck_visual_identifier.dll','Runtime/scs_tool.exe');$actual=Get-ChildItem $pkg -Recurse -File|ForEach-Object{$_.FullName.Substring($pkg.Length).TrimStart([char]92).Replace('\','/')};foreach($a in $allowed){if($actual-notcontains$a){throw "Package missing: $a"}};foreach($a in $actual){if($allowed-notcontains$a){throw "Unexpected package file: $a"}}
           $forbidden=Get-ChildItem $pkg -Recurse -File|Where-Object{$_.Extension-in@('.obj','.pdb','.lib','.exp','.ilk','.cpp','.h','.hpp','.ps1','.vcxproj','.sln')};if($forbidden){throw "Forbidden package artifact: $($forbidden.FullName -join ', ')"}
-          $readme=Get-Content (Join-Path $pkg 'README.txt') -Raw -Encoding UTF8;foreach($m in @('TESTE A','TESTE B','TESTE C','TESTE D','TESTE E','TESTE F','TruckVisualIdentity.log')){if(-not$readme.Contains($m)){throw "README marker missing: $m"}}
-          Add-Content -Encoding ASCII $report "SOURCE_ARCHIVE_SHA256=$env:SOURCE_SHA256";Add-Content -Encoding ASCII $report "BUILD_FIX_PATCH_SHA256=$env:BUILD_FIX_PATCH_SHA256";Add-Content -Encoding ASCII $report "WINDOWS_VFS_TEST_PATCH_SHA256=$env:WINDOWS_VFS_TEST_PATCH_SHA256";Add-Content -Encoding ASCII $report "EFFECTIVE_SOURCE_ID=$env:EFFECTIVE_SOURCE_ID";Add-Content -Encoding ASCII $report "BRANCH=$env:SOURCE_BRANCH";Add-Content -Encoding ASCII $report "COMMIT=$env:SOURCE_COMMIT";Add-Content -Encoding ASCII $report 'WINDOWS HASHFS/VFS TEST: PASS (ctest)';Add-Content -Encoding ASCII $report 'CABIN/PAINT WINDOWS TESTS: PASS (ctest)';Add-Content -Encoding ASCII $report 'UNINSTALL WINDOWS TEST: PASS';Add-Content -Encoding ASCII $report 'FINAL PE AUDIT: PASS';Add-Content -Encoding ASCII $report 'WINDOWS GUI SMOKE TEST: PASS';Add-Content -Encoding ASCII $report 'PACKAGE AUDIT: PASS'
+          $readme=Get-Content (Join-Path $pkg 'README.txt') -Raw -Encoding UTF8
+          $cCed=[char]0x00E7;$aTilde=[char]0x00E3;$ATilde=[char]0x00C3;$eAcute=[char]0x00E9
+          foreach($m in @('TESTE A','TESTE B','TESTE C','TESTE D','TESTE E','TESTE F','TruckVisualIdentity.log',('identifica'+$cCed+$aTilde+'o'),('caminh'+$aTilde+'o'),('N'+$ATilde+'O INSTALADO'),('tamb'+$eAcute+'m'))){if(-not$readme.Contains($m)){throw "README UTF-8 marker missing: $m"}}
+          foreach($bad in @([string][char]0xFFFD,('identifica'+[char]0x00C3+[char]0x00A7),('caminh'+[char]0x00C3+[char]0x00A3))){if($readme.Contains($bad)){throw 'README mojibake detected in final package.'}}
+          Add-Content -Encoding ASCII $report "SOURCE_ARCHIVE_SHA256=$env:SOURCE_SHA256";Add-Content -Encoding ASCII $report "BUILD_FIX_PATCH_SHA256=$env:BUILD_FIX_PATCH_SHA256";Add-Content -Encoding ASCII $report "WINDOWS_VFS_TEST_PATCH_SHA256=$env:WINDOWS_VFS_TEST_PATCH_SHA256";Add-Content -Encoding ASCII $report "README_UTF8_PATCH_SHA256=$env:README_UTF8_PATCH_SHA256";Add-Content -Encoding ASCII $report "EFFECTIVE_SOURCE_ID=$env:EFFECTIVE_SOURCE_ID";Add-Content -Encoding ASCII $report "BRANCH=$env:SOURCE_BRANCH";Add-Content -Encoding ASCII $report "COMMIT=$env:SOURCE_COMMIT";Add-Content -Encoding ASCII $report 'WINDOWS HASHFS/VFS TEST: PASS (ctest)';Add-Content -Encoding ASCII $report 'CABIN/PAINT WINDOWS TESTS: PASS (ctest)';Add-Content -Encoding ASCII $report 'UNINSTALL WINDOWS TEST: PASS';Add-Content -Encoding ASCII $report 'FINAL PE AUDIT: PASS';Add-Content -Encoding ASCII $report 'WINDOWS GUI SMOKE TEST: PASS';Add-Content -Encoding ASCII $report 'PACKAGE AUDIT: PASS';Add-Content -Encoding ASCII $report 'README UTF-8 AUDIT: PASS'
           Copy-Item 'ci\SOURCE_PROVENANCE.txt' (Join-Path $dist 'SOURCE_PROVENANCE.txt') -Force
 
       - name: Upload audited CabinPaint package
